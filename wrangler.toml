@@ -6,4 +6,4 @@ pages_build_output_dir = "dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "rc-lookup-db"
-database_id = "00000000-0000-0000-0000-000000000000" # Dummy ID for local dev
+database_id = "0bc211d4-27c1-4400-92b0-b254b58ca5a1"
