@@ -13,6 +13,11 @@ export default function AdminPanel() {
     const [message, setMessage] = useState({ type: '', text: '' });
     const [activeTab, setActiveTab] = useState('users');
 
+    const emptyNewUser = { fullName: '', email: '', password: '', role: 'user', credits: 0 };
+    const [newUser, setNewUser] = useState(emptyNewUser);
+    const [isCreating, setIsCreating] = useState(false);
+    const [createMessage, setCreateMessage] = useState({ type: '', text: '' });
+
     useEffect(() => {
         fetchData();
     }, []);
@@ -65,6 +70,43 @@ export default function AdminPanel() {
         }
     };
 
+    const handleCreateUser = async (e) => {
+        e.preventDefault();
+        setIsCreating(true);
+        setCreateMessage({ type: '', text: '' });
+
+        try {
+            const res = await fetch('/api/admin/create-user', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({
+                    fullName: newUser.fullName,
+                    email: newUser.email,
+                    password: newUser.password,
+                    role: newUser.role,
+                    credits: parseInt(newUser.credits) || 0
+                })
+            });
+
+            const data = await res.json();
+
+            if (res.ok) {
+                setCreateMessage({ type: 'success', text: data.message });
+                setNewUser(emptyNewUser);
+                fetchData(); // Refresh data
+            } else {
+                setCreateMessage({ type: 'error', text: data.error || 'Failed to create user' });
+            }
+        } catch (err) {
+            setCreateMessage({ type: 'error', text: 'Network error' });
+        } finally {
+            setIsCreating(false);
+        }
+    };
+
     const handleLogout = () => {
         logout();
         navigate('/login');
@@ -91,6 +133,77 @@ export default function AdminPanel() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-1 space-y-6">
+                    <div className="glass-panel p-6">
+                        <h2 className="text-lg font-semibold text-white mb-4">Create User</h2>
+                        {createMessage.text && (
+                            <div className={`p-3 rounded-lg mb-4 text-sm ${createMessage.type === 'success' ? 'bg-green-500/10 text-green-400 border border-green-500/50' : 'bg-red-500/10 text-red-400 border border-red-500/50'}`}>
+                                {createMessage.text}
+                            </div>
+                        )}
+                        <form onSubmit={handleCreateUser} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">Full Name</label>
+                                <input
+                                    type="text"
+                                    className="input-field"
+                                    placeholder="John Doe"
+                                    value={newUser.fullName}
+                                    onChange={(e) => setNewUser({ ...newUser, fullName: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">Email (User ID)</label>
+                                <input
+                                    type="email"
+                                    className="input-field"
+                                    placeholder="user@example.com"
+                                    value={newUser.email}
+                                    onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">Password</label>
+                                <input
+                                    type="text"
+                                    className="input-field"
+                                    placeholder="At least 8 characters"
+                                    value={newUser.password}
+                                    onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                                    minLength={8}
+                                    required
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-300 mb-1">Role</label>
+                                    <select
+                                        className="input-field bg-slate-900"
+                                        value={newUser.role}
+                                        onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                                    >
+                                        <option value="user">User</option>
+                                        <option value="admin">Admin</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-300 mb-1">Credits</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        className="input-field"
+                                        value={newUser.credits}
+                                        onChange={(e) => setNewUser({ ...newUser, credits: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+                            <button type="submit" className="btn-primary w-full" disabled={isCreating}>
+                                {isCreating ? 'Creating...' : 'Create User'}
+                            </button>
+                        </form>
+                    </div>
+
                     <div className="glass-panel p-6">
                         <h2 className="text-lg font-semibold text-white mb-4">Recharge Credits</h2>
                         {message.text && (

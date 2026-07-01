@@ -10,11 +10,11 @@ export async function getUserByEmail(db, email) {
     return results[0] || null;
 }
 
-export async function createUser(db, { email, password, full_name }) {
+export async function createUser(db, { email, password, full_name, role = 'user', credits = 0 }) {
     const { success, meta } = await db.prepare(
-        'INSERT INTO users (email, password, full_name) VALUES (?, ?, ?)'
-    ).bind(email, password, full_name).run();
-    return success;
+        'INSERT INTO users (email, password, full_name, role, credits) VALUES (?, ?, ?, ?, ?)'
+    ).bind(email, password, full_name, role, credits).run();
+    return { success, id: meta.last_row_id };
 }
 
 export async function addCredits(db, { userId, amount, adminId, description = 'Recharge' }) {
