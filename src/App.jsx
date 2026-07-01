@@ -22,16 +22,12 @@ function ProtectedRoute({ children, adminOnly = false }) {
 function App() {
     return (
         <>
-            {/* Background Video */}
-            <video 
-                autoPlay 
-                loop 
-                muted 
-                playsInline
+            {/* Background Image */}
+            <img
+                src="/bg.jpg"
+                alt=""
                 className="fixed top-0 left-0 w-full h-full object-cover -z-10"
-            >
-                <source src="/bg.mp4" type="video/mp4" />
-            </video>
+            />
             
             {/* Overlay to ensure text readability */}
             <div className="fixed top-0 left-0 w-full h-full bg-slate-900/40 -z-10"></div>
