@@ -40,10 +40,69 @@ export async function deductCredit(db, { userId, rcNumber }) {
     return success;
 }
 
-export async function saveLookupHistory(db, { userId, rcNumber, mobileNumber, ownerName, vehicleNumber }) {
+export async function saveLookupHistory(db, { userId, rcNumber, mobileNumber, ownerName, vehicleNumber, creditsDeducted = 1 }) {
     const { success } = await db.prepare(
-        'INSERT INTO lookup_history (user_id, rc_number, mobile_number, owner_name, vehicle_number) VALUES (?, ?, ?, ?, ?)'
-    ).bind(userId, rcNumber, mobileNumber, ownerName, vehicleNumber).run();
+        'INSERT INTO lookup_history (user_id, rc_number, mobile_number, owner_name, vehicle_number, credits_deducted) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(userId, rcNumber, mobileNumber, ownerName, vehicleNumber, creditsDeducted).run();
+    return success;
+}
+
+// --- Global settings -----------------------------------------------------------
+
+export async function getSetting(db, key, defaultValue = null) {
+    const { results } = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).all();
+    return results[0] ? results[0].value : defaultValue;
+}
+
+export async function setSetting(db, key, value) {
+    const { success } = await db.prepare(
+        `INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+    ).bind(key, String(value)).run();
+    return success;
+}
+
+// Global "premium" threshold: a user must have MORE than this many credits to run a
+// lookup. Set by admin, applies to all users. Falls back to 0 if unset/invalid.
+export async function getPremiumThreshold(db) {
+    const raw = await getSetting(db, 'premium_threshold', '0');
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+// --- Shared RC -> Mobile cache -------------------------------------------------
+
+// Return a cached RC lookup only if it exists AND is still fresh (within maxAgeDays).
+// A stale entry returns null so the caller re-fetches from the provider and refreshes it.
+export async function getCachedRcLookup(db, rcNumber, maxAgeDays = 90) {
+    const { results } = await db.prepare(
+        `SELECT * FROM rc_mobile_cache
+         WHERE rc_number = ?
+           AND updated_at > datetime('now', ?)`
+    ).bind(rcNumber, `-${maxAgeDays} days`).all();
+    return results[0] || null;
+}
+
+// Insert a fresh lookup, or refresh an existing entry (rc_number is UNIQUE).
+export async function saveRcToCache(db, { rcNumber, mobileNumber, ownerName, vehicleNumber, source = 'idspay' }) {
+    const { success } = await db.prepare(
+        `INSERT INTO rc_mobile_cache (rc_number, mobile_number, owner_name, vehicle_number, source)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(rc_number) DO UPDATE SET
+            mobile_number = excluded.mobile_number,
+            owner_name = excluded.owner_name,
+            vehicle_number = excluded.vehicle_number,
+            source = excluded.source,
+            updated_at = CURRENT_TIMESTAMP`
+    ).bind(rcNumber, mobileNumber, ownerName, vehicleNumber, source).run();
+    return success;
+}
+
+// Bump the served-from-cache counter (a savings metric; not on the critical path).
+export async function incrementCacheHit(db, rcNumber) {
+    const { success } = await db.prepare(
+        'UPDATE rc_mobile_cache SET hit_count = hit_count + 1 WHERE rc_number = ?'
+    ).bind(rcNumber).run();
     return success;
 }
 

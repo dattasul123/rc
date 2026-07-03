@@ -23,20 +23,32 @@ export default function AdminPanel() {
     const [isCreating, setIsCreating] = useState(false);
     const [createMessage, setCreateMessage] = useState({ type: '', text: '' });
 
+    const [premiumThreshold, setPremiumThreshold] = useState(0);
+    const [premiumInput, setPremiumInput] = useState('0');
+    const [savingPremium, setSavingPremium] = useState(false);
+    const [premiumMessage, setPremiumMessage] = useState({ type: '', text: '' });
+
     useEffect(() => {
         fetchData();
     }, []);
 
     const fetchData = async () => {
         try {
-            const [usersRes, transRes, walletRes] = await Promise.all([
+            const [usersRes, transRes, walletRes, settingsRes] = await Promise.all([
                 fetch('/api/admin/users', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
                 fetch('/api/admin/transactions', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
-                fetch('/api/admin/provider-wallet', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
+                fetch('/api/admin/provider-wallet', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
+                fetch('/api/admin/settings', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
             ]);
 
             if (usersRes.ok) setUsers((await usersRes.json()).users);
             if (transRes.ok) setTransactions((await transRes.json()).transactions);
+            if (settingsRes.ok) {
+                const s = await settingsRes.json();
+                const threshold = s.premiumThreshold ?? 0;
+                setPremiumThreshold(threshold);
+                setPremiumInput(String(threshold));
+            }
             if (walletRes.ok) {
                 setProviderWallet(await walletRes.json());
             } else {
@@ -88,6 +100,37 @@ export default function AdminPanel() {
             setMessage({ type: 'error', text: 'Network error' });
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleSavePremium = async (e) => {
+        e.preventDefault();
+        setSavingPremium(true);
+        setPremiumMessage({ type: '', text: '' });
+
+        try {
+            const res = await fetch('/api/admin/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({ premiumThreshold: parseInt(premiumInput, 10) })
+            });
+
+            const data = await res.json();
+
+            if (res.ok) {
+                setPremiumThreshold(data.premiumThreshold);
+                setPremiumInput(String(data.premiumThreshold));
+                setPremiumMessage({ type: 'success', text: data.message });
+            } else {
+                setPremiumMessage({ type: 'error', text: data.error || 'Failed to update threshold' });
+            }
+        } catch (err) {
+            setPremiumMessage({ type: 'error', text: 'Network error' });
+        } finally {
+            setSavingPremium(false);
         }
     };
 
@@ -290,6 +333,35 @@ export default function AdminPanel() {
                             </div>
                             <button type="submit" className="btn-primary w-full" disabled={isLoading}>
                                 {isLoading ? 'Processing...' : 'Add Credits'}
+                            </button>
+                        </form>
+                    </div>
+
+                    <div className="glass-panel p-6">
+                        <h2 className="text-lg font-semibold text-white mb-1">Premium Threshold</h2>
+                        <p className="text-xs text-slate-400 mb-4">
+                            Global minimum balance. Users must have <span className="text-slate-200 font-medium">more than</span> this many credits to run a lookup. Applies to all users.
+                        </p>
+                        {premiumMessage.text && (
+                            <div className={`p-3 rounded-lg mb-4 text-sm ${premiumMessage.type === 'success' ? 'bg-green-500/10 text-green-400 border border-green-500/50' : 'bg-red-500/10 text-red-400 border border-red-500/50'}`}>
+                                {premiumMessage.text}
+                            </div>
+                        )}
+                        <form onSubmit={handleSavePremium} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">Minimum credits (premium)</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    className="input-field"
+                                    value={premiumInput}
+                                    onChange={(e) => setPremiumInput(e.target.value)}
+                                    required
+                                />
+                                <p className="text-xs text-slate-500 mt-1">Currently active: {premiumThreshold}</p>
+                            </div>
+                            <button type="submit" className="btn-primary w-full" disabled={savingPremium}>
+                                {savingPremium ? 'Saving...' : 'Save Threshold'}
                             </button>
                         </form>
                     </div>
