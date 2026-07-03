@@ -10,8 +10,36 @@ function jsonResponse(body, status = 200) {
     });
 }
 
-function readProviderMobile(data) {
-    return data?.mobileNo || data?.mobile_no || data?.mobile || data?.mobileNumber || '';
+function normalizeFieldName(key) {
+    return String(key).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function readProviderMobile(value, depth = 0) {
+    if (!value || depth > 4) return '';
+
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const mobile = readProviderMobile(item, depth + 1);
+            if (mobile) return mobile;
+        }
+        return '';
+    }
+
+    if (typeof value !== 'object') return '';
+
+    for (const [key, fieldValue] of Object.entries(value)) {
+        const normalizedKey = normalizeFieldName(key);
+        if (['mobileno', 'mobilenumber', 'mobile'].includes(normalizedKey) && fieldValue) {
+            return fieldValue;
+        }
+    }
+
+    for (const fieldValue of Object.values(value)) {
+        const mobile = readProviderMobile(fieldValue, depth + 1);
+        if (mobile) return mobile;
+    }
+
+    return '';
 }
 
 export async function onRequestPost(context) {
@@ -68,9 +96,16 @@ export async function onRequestPost(context) {
             ? providerMobileDigits.slice(2)
             : providerMobileDigits;
 
-        if (!apiResp.ok || providerStatus !== 'success' || !providerMobile) {
+        if (!apiResp.ok || providerStatus !== 'success') {
             const message = apiJson?.message || apiJson?.status?.message || 'RC to Mobile lookup failed';
             return jsonResponse({ success: false, message }, 502);
+        }
+
+        if (!providerMobile) {
+            return jsonResponse({
+                success: false,
+                message: 'Provider reported success but did not return a mobile number'
+            }, 502);
         }
 
         if (/[xX*]/.test(providerMobile) || !/^\d{10}$/.test(normalizedMobile)) {
