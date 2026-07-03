@@ -1,65 +1,118 @@
 import { getUserById, deductCredit, saveLookupHistory } from '../../utils/db.js';
 
+const DEFAULT_IDSPAY_BASE_URL = 'https://javabackend.idspay.in/api/v1/prod';
+const REQUIRED_IDSPAY_ENV = ['IDSPAY_API_ID', 'IDSPAY_API_KEY', 'IDSPAY_TOKEN_ID'];
+
+function jsonResponse(body, status = 200) {
+    return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+function readProviderMobile(data) {
+    return data?.mobileNo || data?.mobile_no || data?.mobile || data?.mobileNumber || '';
+}
+
 export async function onRequestPost(context) {
     try {
         const { request, env, data } = context;
         const userId = data.user.id;
         const { rcNumber } = await request.json();
+        const vehicleNumber = String(rcNumber || '').trim().toUpperCase();
 
-        if (!rcNumber) {
-            return new Response(JSON.stringify({ error: 'RC Number is required' }), { status: 400 });
+        if (!vehicleNumber) {
+            return jsonResponse({ error: 'RC Number is required' }, 400);
+        }
+
+        if (vehicleNumber.length < 5) {
+            return jsonResponse({ success: false, message: 'Invalid RC number format' }, 400);
         }
 
         const user = await getUserById(env.DB, userId);
         if (!user || user.credits <= 0) {
-            return new Response(JSON.stringify({ error: 'Insufficient credits' }), { status: 403 });
+            return jsonResponse({ error: 'Insufficient credits' }, 403);
         }
 
-        // --- Mocking 3rd Party RC API ---
-        // Simulating network delay
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        // Mock response data
-        const mockData = {
-            mobileNumber: '9' + Math.floor(Math.random() * 1000000000).toString().padStart(9, '0'), // Random 10 digit number starting with 9
-            ownerName: 'Mock Owner ' + rcNumber.slice(-4),
-            vehicleNumber: rcNumber.toUpperCase(),
-            rcNumber: rcNumber.toUpperCase()
+        const missingEnv = REQUIRED_IDSPAY_ENV.filter((key) => !env[key]);
+        if (missingEnv.length > 0) {
+            console.error(`IDSPay configuration missing: ${missingEnv.join(', ')}`);
+            return jsonResponse({ success: false, message: 'RC lookup provider is not configured' }, 500);
+        }
+
+        // --- IDSPay "RC To Mobile v3" API (POST /srv1/rc-to-mobile) ---
+        const baseUrl = (env.IDSPAY_BASE_URL || DEFAULT_IDSPAY_BASE_URL).replace(/\/+$/, '');
+        const apiResp = await fetch(`${baseUrl}/srv1/rc-to-mobile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                api_id: env.IDSPAY_API_ID,
+                api_key: env.IDSPAY_API_KEY,
+                token_id: env.IDSPAY_TOKEN_ID,
+                vehicle_num: vehicleNumber
+            })
+        });
+
+        const responseText = await apiResp.text();
+        let apiJson = {};
+        try {
+            apiJson = responseText ? JSON.parse(responseText) : {};
+        } catch {
+            return jsonResponse({ success: false, message: 'RC lookup provider returned an invalid response' }, 502);
+        }
+
+        const providerStatus = String(apiJson?.status?.type || '').trim().toLowerCase();
+        const providerMobile = String(readProviderMobile(apiJson?.data)).trim();
+        const providerMobileDigits = providerMobile.replace(/\D/g, '');
+        const normalizedMobile = providerMobileDigits.length === 12 && providerMobileDigits.startsWith('91')
+            ? providerMobileDigits.slice(2)
+            : providerMobileDigits;
+
+        if (!apiResp.ok || providerStatus !== 'success' || !providerMobile) {
+            const message = apiJson?.message || apiJson?.status?.message || 'RC to Mobile lookup failed';
+            return jsonResponse({ success: false, message }, 502);
+        }
+
+        if (/[xX*]/.test(providerMobile) || !/^\d{10}$/.test(normalizedMobile)) {
+            console.error('IDSPay returned a non-production or masked mobile number response');
+            return jsonResponse({
+                success: false,
+                message: 'Provider returned masked/sample data. Confirm the production API credentials and endpoint are active.'
+            }, 502);
+        }
+
+        const result = {
+            mobileNumber: normalizedMobile,
+            ownerName: apiJson.data.ownerName || 'N/A', // Not returned by RC To Mobile v3
+            vehicleNumber,
+            rcNumber: vehicleNumber
         };
+        // --------------------------------------------------------------
 
-        // If the API call fails or is invalid, we would return here.
-        if (rcNumber.length < 5) {
-             return new Response(JSON.stringify({ success: false, message: 'Invalid RC number format' }), { status: 400 });
-        }
-        // --------------------------------
-
-        // Deduct credit
-        const deducted = await deductCredit(env.DB, { userId, rcNumber: mockData.rcNumber });
+        // Deduct credit (only after a successful lookup)
+        const deducted = await deductCredit(env.DB, { userId, rcNumber: result.rcNumber });
         if (!deducted) {
-             return new Response(JSON.stringify({ error: 'Failed to deduct credit' }), { status: 500 });
+            return jsonResponse({ error: 'Failed to deduct credit' }, 500);
         }
 
         // Save history
         await saveLookupHistory(env.DB, {
             userId,
-            rcNumber: mockData.rcNumber,
-            mobileNumber: mockData.mobileNumber,
-            ownerName: mockData.ownerName,
-            vehicleNumber: mockData.vehicleNumber
+            rcNumber: result.rcNumber,
+            mobileNumber: result.mobileNumber,
+            ownerName: result.ownerName,
+            vehicleNumber: result.vehicleNumber
         });
 
         const remainingCredits = user.credits - 1;
 
-        return new Response(JSON.stringify({
+        return jsonResponse({
             success: true,
-            data: mockData,
+            data: result,
             creditsDeducted: 1,
             remainingCredits
-        }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' }
         });
     } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+        return jsonResponse({ error: err.message }, 500);
     }
 }
