@@ -1,4 +1,15 @@
-import { getUserById, deductCredit, saveLookupHistory } from '../../utils/db.js';
+import {
+    getUserById,
+    deductCredit,
+    saveLookupHistory,
+    getCachedRcLookup,
+    saveRcToCache,
+    incrementCacheHit,
+    getPremiumThreshold
+} from '../../utils/db.js';
+
+// Serve a cached RC->mobile result if it was fetched within this many days.
+const RC_CACHE_MAX_AGE_DAYS = 90;
 
 const DEFAULT_IDSPAY_BASE_URL = 'https://javabackend.idspay.in/api/v1/prod';
 const REQUIRED_IDSPAY_ENV = ['IDSPAY_API_ID', 'IDSPAY_API_KEY', 'IDSPAY_TOKEN_ID'];
@@ -57,10 +68,49 @@ export async function onRequestPost(context) {
             return jsonResponse({ success: false, message: 'Invalid RC number format' }, 400);
         }
 
+        // Global "premium" threshold set by admin: a user must have MORE than this
+        // many credits to run a lookup (including free cache hits). Applies to all users.
+        const premiumThreshold = await getPremiumThreshold(env.DB);
+
         const user = await getUserById(env.DB, userId);
-        if (!user || user.credits <= 0) {
-            return jsonResponse({ error: 'Insufficient credits' }, 403);
+        if (!user || user.credits <= premiumThreshold) {
+            const message = premiumThreshold > 0
+                ? `A minimum balance above ${premiumThreshold} credits is required to run a lookup`
+                : 'Insufficient credits';
+            return jsonResponse({ error: message }, 403);
         }
+
+        // --- Shared cache: if any user already looked up this RC (and it's still
+        //     fresh), serve it from our DB without calling the paid provider.
+        //     Cache hits are free — no credit is deducted. ---
+        const cached = await getCachedRcLookup(env.DB, vehicleNumber, RC_CACHE_MAX_AGE_DAYS);
+        if (cached) {
+            const result = {
+                mobileNumber: cached.mobile_number,
+                ownerName: cached.owner_name || 'N/A',
+                vehicleNumber,
+                rcNumber: vehicleNumber
+            };
+
+            await incrementCacheHit(env.DB, vehicleNumber);
+            await saveLookupHistory(env.DB, {
+                userId,
+                rcNumber: result.rcNumber,
+                mobileNumber: result.mobileNumber,
+                ownerName: result.ownerName,
+                vehicleNumber: result.vehicleNumber,
+                creditsDeducted: 0
+            });
+
+            return jsonResponse({
+                success: true,
+                data: result,
+                cached: true,
+                creditsDeducted: 0,
+                remainingCredits: user.credits
+            });
+        }
+        // ---------------------------------------------------------------------
 
         const missingEnv = REQUIRED_IDSPAY_ENV.filter((key) => !env[key]);
         if (missingEnv.length > 0) {
@@ -124,6 +174,15 @@ export async function onRequestPost(context) {
         };
         // --------------------------------------------------------------
 
+        // Persist to the shared cache first, so this paid result is reusable by
+        // any user even if the credit deduction below fails for this request.
+        await saveRcToCache(env.DB, {
+            rcNumber: result.rcNumber,
+            mobileNumber: result.mobileNumber,
+            ownerName: result.ownerName === 'N/A' ? null : result.ownerName,
+            vehicleNumber: result.vehicleNumber
+        });
+
         // Deduct credit (only after a successful lookup)
         const deducted = await deductCredit(env.DB, { userId, rcNumber: result.rcNumber });
         if (!deducted) {
@@ -136,7 +195,8 @@ export async function onRequestPost(context) {
             rcNumber: result.rcNumber,
             mobileNumber: result.mobileNumber,
             ownerName: result.ownerName,
-            vehicleNumber: result.vehicleNumber
+            vehicleNumber: result.vehicleNumber,
+            creditsDeducted: 1
         });
 
         const remainingCredits = user.credits - 1;
@@ -144,6 +204,7 @@ export async function onRequestPost(context) {
         return jsonResponse({
             success: true,
             data: result,
+            cached: false,
             creditsDeducted: 1,
             remainingCredits
         });
