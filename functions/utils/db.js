@@ -47,6 +47,15 @@ export async function saveLookupHistory(db, { userId, rcNumber, mobileNumber, ow
     return success;
 }
 
+export async function deleteUser(db, userId) {
+    const batch = await db.batch([
+        db.prepare('DELETE FROM lookup_history WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM transactions WHERE user_id = ?').bind(userId),
+        db.prepare('DELETE FROM users WHERE id = ?').bind(userId)
+    ]);
+    return batch[2].meta.changes > 0;
+}
+
 export async function updateUserPassword(db, userId, hashedPassword) {
     const { success } = await db.prepare(
         'UPDATE users SET password = ? WHERE id = ?'

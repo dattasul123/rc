@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 export default function AdminPanel() {
-    const { logout } = useAuth();
+    const { logout, user: currentUser } = useAuth();
     const navigate = useNavigate();
     const [users, setUsers] = useState([]);
     const [transactions, setTransactions] = useState([]);
@@ -12,6 +12,11 @@ export default function AdminPanel() {
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
     const [activeTab, setActiveTab] = useState('users');
+    const [providerWallet, setProviderWallet] = useState({
+        configured: false,
+        available: false,
+        message: 'Loading...'
+    });
 
     const emptyNewUser = { fullName: '', email: '', password: '', role: 'user', credits: 0 };
     const [newUser, setNewUser] = useState(emptyNewUser);
@@ -24,15 +29,31 @@ export default function AdminPanel() {
 
     const fetchData = async () => {
         try {
-            const [usersRes, transRes] = await Promise.all([
+            const [usersRes, transRes, walletRes] = await Promise.all([
                 fetch('/api/admin/users', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
-                fetch('/api/admin/transactions', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
+                fetch('/api/admin/transactions', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
+                fetch('/api/admin/provider-wallet', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
             ]);
 
             if (usersRes.ok) setUsers((await usersRes.json()).users);
             if (transRes.ok) setTransactions((await transRes.json()).transactions);
+            if (walletRes.ok) {
+                setProviderWallet(await walletRes.json());
+            } else {
+                const data = await walletRes.json().catch(() => ({}));
+                setProviderWallet({
+                    configured: true,
+                    available: false,
+                    message: data.message || data.error || 'Unable to fetch wallet balance'
+                });
+            }
         } catch (err) {
             console.error('Failed to fetch admin data', err);
+            setProviderWallet({
+                configured: true,
+                available: false,
+                message: 'Unable to fetch wallet balance'
+            });
         }
     };
 
@@ -107,6 +128,36 @@ export default function AdminPanel() {
         }
     };
 
+    const handleDeleteUser = async (u) => {
+        if (!window.confirm(`Delete ${u.full_name} (${u.email})? This also removes their transactions and lookup history. This cannot be undone.`)) {
+            return;
+        }
+
+        setMessage({ type: '', text: '' });
+
+        try {
+            const res = await fetch('/api/admin/delete-user', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({ userId: u.id })
+            });
+
+            const data = await res.json();
+
+            if (res.ok) {
+                setMessage({ type: 'success', text: data.message });
+                fetchData(); // Refresh data
+            } else {
+                setMessage({ type: 'error', text: data.error || 'Failed to delete user' });
+            }
+        } catch (err) {
+            setMessage({ type: 'error', text: 'Network error' });
+        }
+    };
+
     const handleLogout = () => {
         logout();
         navigate('/login');
@@ -153,11 +204,11 @@ export default function AdminPanel() {
                                 />
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-slate-300 mb-1">Email (User ID)</label>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">User ID</label>
                                 <input
-                                    type="email"
+                                    type="text"
                                     className="input-field"
-                                    placeholder="user@example.com"
+                                    placeholder="e.g. a, john01, 1234"
                                     value={newUser.email}
                                     onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
                                     required
@@ -247,6 +298,17 @@ export default function AdminPanel() {
                         <h2 className="text-lg font-semibold text-white mb-2">System Stats</h2>
                         <div className="space-y-3 mt-4">
                             <div className="flex justify-between items-center bg-white/5 border border-white/10 p-3 rounded-lg">
+                                <span className="text-slate-400 text-sm">IDSPay Wallet</span>
+                                <span className={`font-bold text-right ${providerWallet.available ? 'text-green-400' : 'text-amber-300'}`}>
+                                    {providerWallet.available ? providerWallet.balance : 'Unavailable'}
+                                </span>
+                            </div>
+                            {!providerWallet.available && (
+                                <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 p-3 rounded-lg text-xs leading-relaxed">
+                                    {providerWallet.message || 'Wallet balance is not available'}
+                                </div>
+                            )}
+                            <div className="flex justify-between items-center bg-white/5 border border-white/10 p-3 rounded-lg">
                                 <span className="text-slate-400 text-sm">Total Users</span>
                                 <span className="font-bold text-white">{users.length}</span>
                             </div>
@@ -280,9 +342,10 @@ export default function AdminPanel() {
                                 <table className="w-full text-left text-sm">
                                     <thead className="text-slate-400 bg-slate-900/50 backdrop-blur-md border-b border-white/10">
                                         <tr>
-                                            <th className="pb-3 px-4">Name / Email</th>
+                                            <th className="pb-3 px-4">Name / User ID</th>
                                             <th className="pb-3 px-4">Role</th>
                                             <th className="pb-3 px-4">Credits</th>
+                                            <th className="pb-3 px-4 text-right">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -298,6 +361,18 @@ export default function AdminPanel() {
                                                     </span>
                                                 </td>
                                                 <td className="py-3 px-4 font-semibold text-white">{u.credits}</td>
+                                                <td className="py-3 px-4 text-right">
+                                                    {currentUser && u.id === currentUser.id ? (
+                                                        <span className="text-xs text-slate-500">You</span>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => handleDeleteUser(u)}
+                                                            className="text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 px-3 py-1 rounded transition-colors"
+                                                        >
+                                                            Delete
+                                                        </button>
+                                                    )}
+                                                </td>
                                             </tr>
                                         ))}
                                     </tbody>
