@@ -130,7 +130,7 @@ export default function Dashboard() {
                         </button>
                     )}
                     <button onClick={() => setShowPasswordModal(true)} className="text-base font-bold text-slate-300 hover:text-white transition-colors drop-shadow">
-                        Settings
+                        Change Password
                     </button>
                     <button onClick={handleLogout} className="text-base font-bold text-red-400 hover:text-red-300 transition-colors drop-shadow">
                         Logout
