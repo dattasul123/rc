@@ -247,8 +247,8 @@ export default function AdminPanel() {
     };
 
     return (
-        <div className="min-h-screen p-6 max-w-6xl mx-auto space-y-6">
-            <header className="flex justify-between items-center bg-white/5 backdrop-blur-xl p-4 rounded-xl border border-white/10 shadow-lg">
+        <div className="min-h-screen p-3 sm:p-6 max-w-6xl mx-auto space-y-4 sm:space-y-6">
+            <header className="flex flex-col sm:flex-row gap-3 sm:justify-between sm:items-center bg-white/5 backdrop-blur-xl p-4 rounded-xl border border-white/10 shadow-lg">
                 <div>
                     <h1 className="text-xl font-bold text-white flex items-center gap-2">
                         <span className="bg-indigo-600 text-xs px-2 py-1 rounded">ADMIN</span>
@@ -265,9 +265,9 @@ export default function AdminPanel() {
                 </div>
             </header>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-1 space-y-6">
-                    <div className="glass-panel p-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+                <div className="lg:col-span-1 space-y-4 sm:space-y-6">
+                    <div className="glass-panel p-5 sm:p-6">
                         <h2 className="text-lg font-semibold text-white mb-4">Create User</h2>
                         {createMessage.text && (
                             <div className={`p-3 rounded-lg mb-4 text-sm ${createMessage.type === 'success' ? 'bg-green-500/10 text-green-400 border border-green-500/50' : 'bg-red-500/10 text-red-400 border border-red-500/50'}`}>
@@ -338,7 +338,7 @@ export default function AdminPanel() {
                         </form>
                     </div>
 
-                    <div className="glass-panel p-6">
+                    <div className="glass-panel p-5 sm:p-6">
                         <h2 className="text-lg font-semibold text-white mb-4">Adjust Credits</h2>
                         {message.text && (
                             <div className={`p-3 rounded-lg mb-4 text-sm ${message.type === 'success' ? 'bg-green-500/10 text-green-400 border border-green-500/50' : 'bg-red-500/10 text-red-400 border border-red-500/50'}`}>
@@ -396,7 +396,7 @@ export default function AdminPanel() {
                         </form>
                     </div>
 
-                    <div className="glass-panel p-6">
+                    <div className="glass-panel p-5 sm:p-6">
                         <h2 className="text-lg font-semibold text-white mb-1">Premium Threshold</h2>
                         <p className="text-xs text-slate-400 mb-4">
                             Global minimum balance. Users must have <span className="text-slate-200 font-medium">more than</span> this many credits to run a lookup. Applies to all users.
@@ -425,7 +425,7 @@ export default function AdminPanel() {
                         </form>
                     </div>
 
-                    <div className="glass-panel p-6">
+                    <div className="glass-panel p-5 sm:p-6">
                         <h2 className="text-lg font-semibold text-white mb-2">System Stats</h2>
                         <div className="space-y-3 mt-4">
                             <div className="flex justify-between items-center bg-white/5 border border-white/10 p-3 rounded-lg">
@@ -452,7 +452,7 @@ export default function AdminPanel() {
                 </div>
 
                 <div className="lg:col-span-2">
-                    <div className="glass-panel overflow-hidden h-[600px] flex flex-col">
+                    <div className="glass-panel overflow-hidden h-[70vh] sm:h-[600px] flex flex-col">
                         <div className="flex border-b border-white/10">
                             <button 
                                 className={`flex-1 py-4 text-sm font-medium text-center transition-colors ${activeTab === 'users' ? 'text-indigo-400 border-b-2 border-indigo-400 bg-indigo-500/5' : 'text-slate-400 hover:text-slate-200'}`}
@@ -468,9 +468,9 @@ export default function AdminPanel() {
                             </button>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                        <div className="flex-1 overflow-auto p-3 sm:p-4 custom-scrollbar">
                             {activeTab === 'users' ? (
-                                <table className="w-full text-left text-sm">
+                                <table className="w-full min-w-[520px] text-left text-sm">
                                     <thead className="text-slate-400 bg-slate-900/50 backdrop-blur-md border-b border-white/10">
                                         <tr>
                                             <th className="pb-3 px-4">Name / User ID</th>
@@ -525,7 +525,7 @@ export default function AdminPanel() {
                                     </tbody>
                                 </table>
                             ) : (
-                                <table className="w-full text-left text-sm">
+                                <table className="w-full min-w-[520px] text-left text-sm">
                                     <thead className="text-slate-400 bg-slate-900/50 backdrop-blur-md border-b border-white/10">
                                         <tr>
                                             <th className="pb-3 px-4">Type</th>
