@@ -113,16 +113,16 @@ export default function Dashboard() {
     if (!user) return null;
 
     return (
-        <div className="min-h-screen p-6 max-w-5xl mx-auto space-y-6">
-            <header className="flex justify-between items-center bg-white/5 backdrop-blur-xl p-4 rounded-xl border border-white/10 shadow-lg">
+        <div className="min-h-screen p-3 sm:p-6 max-w-5xl mx-auto space-y-4 sm:space-y-6">
+            <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white/5 backdrop-blur-xl p-4 rounded-xl border border-white/10 shadow-lg">
                 <div>
-                    <h1 className="text-2xl font-extrabold text-white tracking-tight">RC Lookup Dashboard</h1>
-                    <p className="text-slate-200 text-base font-medium mt-1">Welcome back, <span className="text-white">{user.fullName}</span></p>
+                    <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">RC Lookup Dashboard</h1>
+                    <p className="text-slate-200 text-sm sm:text-base font-medium mt-1">Welcome back, <span className="text-white">{user.fullName}</span></p>
                 </div>
-                <div className="flex items-center gap-6">
-                    <div className="flex items-center gap-3 bg-indigo-500/20 border border-indigo-400/30 px-5 py-2.5 rounded-xl shadow-inner">
-                        <span className="text-indigo-100 font-semibold text-base uppercase tracking-wider">Credits</span>
-                        <span className="text-white font-black text-2xl drop-shadow-md">{user.credits}</span>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:gap-6">
+                    <div className="flex items-center gap-3 bg-indigo-500/20 border border-indigo-400/30 px-4 py-2 sm:px-5 sm:py-2.5 rounded-xl shadow-inner">
+                        <span className="text-indigo-100 font-semibold text-sm sm:text-base uppercase tracking-wider">Credits</span>
+                        <span className="text-white font-black text-xl sm:text-2xl drop-shadow-md">{user.credits}</span>
                     </div>
                     {user.role === 'admin' && (
                         <button onClick={() => navigate('/admin')} className="text-base font-bold text-indigo-300 hover:text-indigo-200 transition-colors drop-shadow">
@@ -138,11 +138,11 @@ export default function Dashboard() {
                 </div>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="md:col-span-2 space-y-6">
-                    <div className="glass-panel p-8">
-                        <h2 className="text-2xl font-bold text-white mb-6 drop-shadow-md">Perform RC Lookup</h2>
-                        <form onSubmit={handleLookup} className="flex gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+                <div className="md:col-span-2 space-y-4 sm:space-y-6">
+                    <div className="glass-panel p-5 sm:p-8">
+                        <h2 className="text-xl sm:text-2xl font-bold text-white mb-4 sm:mb-6 drop-shadow-md">Perform RC Lookup</h2>
+                        <form onSubmit={handleLookup} className="flex flex-col sm:flex-row gap-3">
                             <input
                                 type="text"
                                 className="input-field flex-1 uppercase"
@@ -151,7 +151,7 @@ export default function Dashboard() {
                                 onChange={(e) => setRcNumber(e.target.value.toUpperCase())}
                                 required
                             />
-                            <button type="submit" className="btn-primary whitespace-nowrap" disabled={isLoading || user.credits <= 0}>
+                            <button type="submit" className="btn-primary whitespace-nowrap w-full sm:w-auto" disabled={isLoading || user.credits <= 0}>
                                 {isLoading ? 'Looking up...' : 'Get Mobile Number'}
                             </button>
                         </form>
@@ -166,9 +166,9 @@ export default function Dashboard() {
                     </div>
 
                     {lookupResult && (
-                        <div className="glass-panel p-6 border-indigo-500/30 bg-indigo-500/5 animate-in">
+                        <div className="glass-panel p-5 sm:p-6 border-indigo-500/30 bg-indigo-500/5 animate-in">
                             <h3 className="text-lg font-medium text-white mb-4">Lookup Result</h3>
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="grid grid-cols-2 gap-3 sm:gap-4">
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Mobile Number</p>
                                     <p className="text-xl font-bold text-green-400">{lookupResult.data.mobileNumber}</p>
@@ -191,8 +191,8 @@ export default function Dashboard() {
                 </div>
 
                 <div className="md:col-span-1">
-                    <div className="glass-panel p-8 h-full flex flex-col">
-                        <h2 className="text-xl font-bold text-white mb-6 drop-shadow-md">Recent Lookups</h2>
+                    <div className="glass-panel p-5 sm:p-8 h-full flex flex-col">
+                        <h2 className="text-xl font-bold text-white mb-4 sm:mb-6 drop-shadow-md">Recent Lookups</h2>
                         <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
                             {history.length === 0 ? (
                                 <p className="text-slate-200 text-base font-medium text-center mt-10 bg-black/20 py-4 rounded-xl">No lookups yet.</p>
@@ -217,7 +217,7 @@ export default function Dashboard() {
             {/* Password Change Modal */}
             {showPasswordModal && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in">
-                    <div className="glass-panel p-8 w-full max-w-md bg-slate-900/80">
+                    <div className="glass-panel p-6 sm:p-8 w-full max-w-md bg-slate-900/80">
                         <div className="flex justify-between items-center mb-6">
                             <h2 className="text-2xl font-bold text-white">Change Password</h2>
                             <button onClick={() => setShowPasswordModal(false)} className="text-slate-400 hover:text-white">✕</button>
