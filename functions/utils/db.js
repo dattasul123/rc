@@ -27,6 +27,21 @@ export async function addCredits(db, { userId, amount, adminId, description = 'R
     return batch[0].success && batch[1].success;
 }
 
+// Admin manual adjustment: `amount` is signed — positive adds credits, negative
+// deducts them. Records a matching credit/debit transaction attributed to the admin.
+// The caller is responsible for ensuring a deduction won't push the balance below 0
+// (see the adjust-credits endpoint).
+export async function adjustCredits(db, { userId, amount, adminId, description }) {
+    const type = amount >= 0 ? 'credit' : 'debit';
+    const batch = await db.batch([
+        db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').bind(amount, userId),
+        db.prepare(
+            'INSERT INTO transactions (user_id, type, amount, description, admin_id) VALUES (?, ?, ?, ?, ?)'
+        ).bind(userId, type, Math.abs(amount), description, adminId)
+    ]);
+    return batch[0].success && batch[1].success;
+}
+
 export async function deductCredit(db, { userId, rcNumber }) {
     const batch = await db.batch([
         db.prepare('UPDATE users SET credits = credits - 1 WHERE id = ? AND credits > 0').bind(userId),

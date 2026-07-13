@@ -9,6 +9,7 @@ export default function AdminPanel() {
     const [transactions, setTransactions] = useState([]);
     const [selectedUserId, setSelectedUserId] = useState('');
     const [creditAmount, setCreditAmount] = useState(10);
+    const [creditAction, setCreditAction] = useState('add'); // 'add' | 'deduct'
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
     const [activeTab, setActiveTab] = useState('users');
@@ -69,7 +70,21 @@ export default function AdminPanel() {
         }
     };
 
-    const handleRecharge = async (e) => {
+    // Shared caller for both the form and the inline +/- buttons.
+    const submitAdjust = async ({ userId, amount, action, note }) => {
+        const res = await fetch('/api/admin/adjust-credits', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({ userId, amount, action, note })
+        });
+        const data = await res.json();
+        return { ok: res.ok, data };
+    };
+
+    const handleAdjust = async (e) => {
         e.preventDefault();
         if (!selectedUserId || creditAmount <= 0) return;
 
@@ -77,29 +92,54 @@ export default function AdminPanel() {
         setMessage({ type: '', text: '' });
 
         try {
-            const res = await fetch('/api/admin/add-credits', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${localStorage.getItem('token')}`
-                },
-                body: JSON.stringify({ userId: selectedUserId, amount: parseInt(creditAmount) })
+            const { ok, data } = await submitAdjust({
+                userId: selectedUserId,
+                amount: parseInt(creditAmount, 10),
+                action: creditAction
             });
 
-            const data = await res.json();
-
-            if (res.ok) {
+            if (ok) {
                 setMessage({ type: 'success', text: data.message });
                 setCreditAmount(10);
                 setSelectedUserId('');
                 fetchData(); // Refresh data
             } else {
-                setMessage({ type: 'error', text: data.error || 'Failed to add credits' });
+                setMessage({ type: 'error', text: data.error || 'Failed to update credits' });
             }
         } catch (err) {
             setMessage({ type: 'error', text: 'Network error' });
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    // Quick per-row adjustment. `action` is 'add' or 'deduct'.
+    const handleInlineAdjust = async (u, action) => {
+        const verb = action === 'deduct' ? 'remove from' : 'add to';
+        const input = window.prompt(
+            `How many credits to ${verb} ${u.full_name} (${u.email})?\nCurrent balance: ${u.credits}`,
+            '1'
+        );
+        if (input == null) return; // cancelled
+
+        const amount = parseInt(input, 10);
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setMessage({ type: 'error', text: 'Enter a valid positive amount' });
+            return;
+        }
+
+        setMessage({ type: '', text: '' });
+
+        try {
+            const { ok, data } = await submitAdjust({ userId: u.id, amount, action });
+            if (ok) {
+                setMessage({ type: 'success', text: data.message });
+                fetchData();
+            } else {
+                setMessage({ type: 'error', text: data.error || 'Failed to update credits' });
+            }
+        } catch (err) {
+            setMessage({ type: 'error', text: 'Network error' });
         }
     };
 
@@ -299,16 +339,16 @@ export default function AdminPanel() {
                     </div>
 
                     <div className="glass-panel p-6">
-                        <h2 className="text-lg font-semibold text-white mb-4">Recharge Credits</h2>
+                        <h2 className="text-lg font-semibold text-white mb-4">Adjust Credits</h2>
                         {message.text && (
                             <div className={`p-3 rounded-lg mb-4 text-sm ${message.type === 'success' ? 'bg-green-500/10 text-green-400 border border-green-500/50' : 'bg-red-500/10 text-red-400 border border-red-500/50'}`}>
                                 {message.text}
                             </div>
                         )}
-                        <form onSubmit={handleRecharge} className="space-y-4">
+                        <form onSubmit={handleAdjust} className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-slate-300 mb-1">Select User</label>
-                                <select 
+                                <select
                                     className="input-field bg-slate-900"
                                     value={selectedUserId}
                                     onChange={(e) => setSelectedUserId(e.target.value)}
@@ -321,8 +361,27 @@ export default function AdminPanel() {
                                 </select>
                             </div>
                             <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">Action</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setCreditAction('add')}
+                                        className={`py-2 rounded-lg text-sm font-medium border transition-colors ${creditAction === 'add' ? 'bg-green-500/20 text-green-300 border-green-500/50' : 'bg-white/5 text-slate-400 border-white/10 hover:text-slate-200'}`}
+                                    >
+                                        + Add
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setCreditAction('deduct')}
+                                        className={`py-2 rounded-lg text-sm font-medium border transition-colors ${creditAction === 'deduct' ? 'bg-red-500/20 text-red-300 border-red-500/50' : 'bg-white/5 text-slate-400 border-white/10 hover:text-slate-200'}`}
+                                    >
+                                        − Deduct
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
                                 <label className="block text-sm font-medium text-slate-300 mb-1">Amount</label>
-                                <input 
+                                <input
                                     type="number"
                                     min="1"
                                     className="input-field"
@@ -332,7 +391,7 @@ export default function AdminPanel() {
                                 />
                             </div>
                             <button type="submit" className="btn-primary w-full" disabled={isLoading}>
-                                {isLoading ? 'Processing...' : 'Add Credits'}
+                                {isLoading ? 'Processing...' : creditAction === 'deduct' ? 'Deduct Credits' : 'Add Credits'}
                             </button>
                         </form>
                     </div>
@@ -434,16 +493,32 @@ export default function AdminPanel() {
                                                 </td>
                                                 <td className="py-3 px-4 font-semibold text-white">{u.credits}</td>
                                                 <td className="py-3 px-4 text-right">
-                                                    {currentUser && u.id === currentUser.id ? (
-                                                        <span className="text-xs text-slate-500">You</span>
-                                                    ) : (
+                                                    <div className="flex items-center justify-end gap-1">
                                                         <button
-                                                            onClick={() => handleDeleteUser(u)}
-                                                            className="text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 px-3 py-1 rounded transition-colors"
+                                                            onClick={() => handleInlineAdjust(u, 'add')}
+                                                            title="Add credits"
+                                                            className="text-sm font-bold text-green-400 hover:text-green-300 hover:bg-green-500/10 w-7 h-7 rounded transition-colors"
                                                         >
-                                                            Delete
+                                                            +
                                                         </button>
-                                                    )}
+                                                        <button
+                                                            onClick={() => handleInlineAdjust(u, 'deduct')}
+                                                            title="Deduct credits"
+                                                            className="text-sm font-bold text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 w-7 h-7 rounded transition-colors"
+                                                        >
+                                                            −
+                                                        </button>
+                                                        {currentUser && u.id === currentUser.id ? (
+                                                            <span className="text-xs text-slate-500 pl-2">You</span>
+                                                        ) : (
+                                                            <button
+                                                                onClick={() => handleDeleteUser(u)}
+                                                                className="text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 px-3 py-1 rounded transition-colors"
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        )}
+                                                    </div>
                                                 </td>
                                             </tr>
                                         ))}
