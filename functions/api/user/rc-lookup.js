@@ -25,13 +25,17 @@ function normalizeFieldName(key) {
     return String(key).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-function readProviderMobile(value, depth = 0) {
+// Recursively find the first non-empty scalar whose (normalized) key matches one
+// of `candidateKeys`. Direct keys on the current object win over nested ones, so a
+// top-level `present_address` is preferred to a nested `address_line`. Provider
+// field names vary between endpoints, so we match on a small set of aliases.
+function findFieldValue(value, candidateKeys, depth = 0) {
     if (!value || depth > 4) return '';
 
     if (Array.isArray(value)) {
         for (const item of value) {
-            const mobile = readProviderMobile(item, depth + 1);
-            if (mobile) return mobile;
+            const found = findFieldValue(item, candidateKeys, depth + 1);
+            if (found) return found;
         }
         return '';
     }
@@ -39,18 +43,41 @@ function readProviderMobile(value, depth = 0) {
     if (typeof value !== 'object') return '';
 
     for (const [key, fieldValue] of Object.entries(value)) {
-        const normalizedKey = normalizeFieldName(key);
-        if (['mobileno', 'mobilenumber', 'mobile'].includes(normalizedKey) && fieldValue) {
-            return fieldValue;
+        if (candidateKeys.includes(normalizeFieldName(key)) && fieldValue && typeof fieldValue !== 'object') {
+            return String(fieldValue).trim();
         }
     }
 
     for (const fieldValue of Object.values(value)) {
-        const mobile = readProviderMobile(fieldValue, depth + 1);
-        if (mobile) return mobile;
+        const found = findFieldValue(fieldValue, candidateKeys, depth + 1);
+        if (found) return found;
     }
 
     return '';
+}
+
+function readProviderMobile(value) {
+    return findFieldValue(value, ['mobileno', 'mobilenumber', 'mobile']);
+}
+
+function readProviderName(value) {
+    // RC Premium V2 uses `owner`; other endpoints use `owner_name` / `ownerName`.
+    return findFieldValue(value, ['owner', 'ownername', 'name']);
+}
+
+function readProviderAddress(value) {
+    return findFieldValue(value, ['presentaddress', 'addressline', 'permanentaddress', 'address']);
+}
+
+// Prefer an explicit pincode field; fall back to the last 6-digit run in the address.
+function readProviderPincode(value, address = '') {
+    const explicit = findFieldValue(value, ['pincode', 'pin']);
+    if (explicit) {
+        const digits = explicit.replace(/\D/g, '');
+        if (digits.length === 6) return digits;
+    }
+    const matches = String(address).match(/\d{6}/g);
+    return matches ? matches[matches.length - 1] : '';
 }
 
 export async function onRequestPost(context) {
@@ -88,6 +115,8 @@ export async function onRequestPost(context) {
             const result = {
                 mobileNumber: cached.mobile_number,
                 ownerName: cached.owner_name || 'N/A',
+                address: cached.present_address || 'N/A',
+                pincode: cached.pincode || 'N/A',
                 vehicleNumber,
                 rcNumber: vehicleNumber
             };
@@ -99,6 +128,8 @@ export async function onRequestPost(context) {
                 mobileNumber: result.mobileNumber,
                 ownerName: result.ownerName,
                 vehicleNumber: result.vehicleNumber,
+                presentAddress: cached.present_address || null,
+                pincode: cached.pincode || null,
                 creditsDeducted: 0
             });
 
@@ -118,9 +149,12 @@ export async function onRequestPost(context) {
             return jsonResponse({ success: false, message: 'RC lookup provider is not configured' }, 500);
         }
 
-        // --- IDSPay "RC To Mobile v3" API (POST /srv1/rc-to-mobile) ---
+        // --- IDSPay "RC Premium V2" API (POST /Rc-Premium-v2-verify) ---
+        //     Returns the full registration record (owner, address, mobile, …).
+        //     Fields are double-nested at data.data.*; the resolved mobile is at
+        //     data.mobileNo (inner data.mobileNumber is often null).
         const baseUrl = (env.IDSPAY_BASE_URL || DEFAULT_IDSPAY_BASE_URL).replace(/\/+$/, '');
-        const apiResp = await fetch(`${baseUrl}/srv1/rc-to-mobile`, {
+        const apiResp = await fetch(`${baseUrl}/Rc-Premium-v2-verify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -140,14 +174,19 @@ export async function onRequestPost(context) {
         }
 
         const providerStatus = String(apiJson?.status?.type || '').trim().toLowerCase();
-        const providerMobile = String(readProviderMobile(apiJson?.data)).trim();
+        const providerData = apiJson?.data;
+        const providerMobile = String(readProviderMobile(providerData)).trim();
         const providerMobileDigits = providerMobile.replace(/\D/g, '');
         const normalizedMobile = providerMobileDigits.length === 12 && providerMobileDigits.startsWith('91')
             ? providerMobileDigits.slice(2)
             : providerMobileDigits;
 
+        const providerName = readProviderName(providerData);
+        const providerAddress = readProviderAddress(providerData);
+        const providerPincode = readProviderPincode(providerData, providerAddress);
+
         if (!apiResp.ok || providerStatus !== 'success') {
-            const message = apiJson?.message || apiJson?.status?.message || 'RC to Mobile lookup failed';
+            const message = apiJson?.message || apiJson?.status?.message || 'RC details lookup failed';
             return jsonResponse({ success: false, message }, 502);
         }
 
@@ -168,7 +207,9 @@ export async function onRequestPost(context) {
 
         const result = {
             mobileNumber: normalizedMobile,
-            ownerName: apiJson.data.ownerName || 'N/A', // Not returned by RC To Mobile v3
+            ownerName: providerName || 'N/A',
+            address: providerAddress || 'N/A',
+            pincode: providerPincode || 'N/A',
             vehicleNumber,
             rcNumber: vehicleNumber
         };
@@ -179,8 +220,10 @@ export async function onRequestPost(context) {
         await saveRcToCache(env.DB, {
             rcNumber: result.rcNumber,
             mobileNumber: result.mobileNumber,
-            ownerName: result.ownerName === 'N/A' ? null : result.ownerName,
-            vehicleNumber: result.vehicleNumber
+            ownerName: providerName || null,
+            vehicleNumber: result.vehicleNumber,
+            presentAddress: providerAddress || null,
+            pincode: providerPincode || null
         });
 
         // Deduct credit (only after a successful lookup)
@@ -196,6 +239,8 @@ export async function onRequestPost(context) {
             mobileNumber: result.mobileNumber,
             ownerName: result.ownerName,
             vehicleNumber: result.vehicleNumber,
+            presentAddress: providerAddress || null,
+            pincode: providerPincode || null,
             creditsDeducted: 1
         });
 
