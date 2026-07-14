@@ -55,10 +55,10 @@ export async function deductCredit(db, { userId, rcNumber }) {
     return success;
 }
 
-export async function saveLookupHistory(db, { userId, rcNumber, mobileNumber, ownerName, vehicleNumber, creditsDeducted = 1 }) {
+export async function saveLookupHistory(db, { userId, rcNumber, mobileNumber, ownerName, vehicleNumber, presentAddress = null, pincode = null, creditsDeducted = 1 }) {
     const { success } = await db.prepare(
-        'INSERT INTO lookup_history (user_id, rc_number, mobile_number, owner_name, vehicle_number, credits_deducted) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(userId, rcNumber, mobileNumber, ownerName, vehicleNumber, creditsDeducted).run();
+        'INSERT INTO lookup_history (user_id, rc_number, mobile_number, owner_name, vehicle_number, present_address, pincode, credits_deducted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(userId, rcNumber, mobileNumber, ownerName, vehicleNumber, presentAddress, pincode, creditsDeducted).run();
     return success;
 }
 
@@ -99,17 +99,19 @@ export async function getCachedRcLookup(db, rcNumber, maxAgeDays = 90) {
 }
 
 // Insert a fresh lookup, or refresh an existing entry (rc_number is UNIQUE).
-export async function saveRcToCache(db, { rcNumber, mobileNumber, ownerName, vehicleNumber, source = 'idspay' }) {
+export async function saveRcToCache(db, { rcNumber, mobileNumber, ownerName, vehicleNumber, presentAddress = null, pincode = null, source = 'idspay' }) {
     const { success } = await db.prepare(
-        `INSERT INTO rc_mobile_cache (rc_number, mobile_number, owner_name, vehicle_number, source)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO rc_mobile_cache (rc_number, mobile_number, owner_name, vehicle_number, present_address, pincode, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(rc_number) DO UPDATE SET
             mobile_number = excluded.mobile_number,
             owner_name = excluded.owner_name,
             vehicle_number = excluded.vehicle_number,
+            present_address = excluded.present_address,
+            pincode = excluded.pincode,
             source = excluded.source,
             updated_at = CURRENT_TIMESTAMP`
-    ).bind(rcNumber, mobileNumber, ownerName, vehicleNumber, source).run();
+    ).bind(rcNumber, mobileNumber, ownerName, vehicleNumber, presentAddress, pincode, source).run();
     return success;
 }
 

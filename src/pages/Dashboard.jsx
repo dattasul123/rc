@@ -152,7 +152,7 @@ export default function Dashboard() {
                                 required
                             />
                             <button type="submit" className="btn-primary whitespace-nowrap w-full sm:w-auto" disabled={isLoading || user.credits <= 0}>
-                                {isLoading ? 'Looking up...' : 'Get Mobile Number'}
+                                {isLoading ? 'Looking up...' : 'Get RC Details'}
                             </button>
                         </form>
                         {user.credits <= 0 && (
@@ -167,19 +167,28 @@ export default function Dashboard() {
 
                     {lookupResult && (
                         <div className="glass-panel p-5 sm:p-6 border-indigo-500/30 bg-indigo-500/5 animate-in">
-                            <h3 className="text-lg font-medium text-white mb-4">Lookup Result</h3>
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-lg font-medium text-white">Lookup Result</h3>
+                                {lookupResult.cached && (
+                                    <span className="text-xs font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">Cached · Free</span>
+                                )}
+                            </div>
                             <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
+                                    <p className="text-slate-400 text-sm">Name</p>
+                                    <p className="text-lg font-semibold text-white">{lookupResult.data.ownerName}</p>
+                                </div>
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Mobile Number</p>
                                     <p className="text-xl font-bold text-green-400">{lookupResult.data.mobileNumber}</p>
                                 </div>
-                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
-                                    <p className="text-slate-400 text-sm">Owner Name</p>
-                                    <p className="text-lg font-semibold text-white">{lookupResult.data.ownerName}</p>
+                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg col-span-2">
+                                    <p className="text-slate-400 text-sm">Address</p>
+                                    <p className="text-base font-semibold text-white">{lookupResult.data.address}</p>
                                 </div>
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
-                                    <p className="text-slate-400 text-sm">Vehicle Number</p>
-                                    <p className="text-lg font-semibold text-white">{lookupResult.data.vehicleNumber}</p>
+                                    <p className="text-slate-400 text-sm">Pincode</p>
+                                    <p className="text-lg font-semibold text-white">{lookupResult.data.pincode}</p>
                                 </div>
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Credits Remaining</p>
@@ -205,7 +214,13 @@ export default function Dashboard() {
                                                 {new Date(item.lookup_date).toLocaleDateString()}
                                             </span>
                                         </div>
-                                        <div className="text-sm text-green-400">{item.mobile_number}</div>
+                                        {item.owner_name && (
+                                            <div className="text-sm text-slate-300 font-medium">{item.owner_name}</div>
+                                        )}
+                                        <div className="text-sm font-bold text-green-400 my-0.5">{item.mobile_number}</div>
+                                        {item.present_address && (
+                                            <div className="text-xs text-slate-400 line-clamp-2 mt-1" title={item.present_address}>{item.present_address}</div>
+                                        )}
                                     </div>
                                 ))
                             )}

@@ -31,6 +31,8 @@ CREATE TABLE lookup_history (
     mobile_number TEXT,
     owner_name TEXT,
     vehicle_number TEXT,
+    present_address TEXT,
+    pincode TEXT,
     credits_deducted INTEGER DEFAULT 1,
     lookup_date DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
@@ -55,6 +57,8 @@ CREATE TABLE rc_mobile_cache (
     mobile_number TEXT NOT NULL,
     owner_name TEXT,
     vehicle_number TEXT,
+    present_address TEXT,           -- RC Plus: registered present address
+    pincode TEXT,                   -- RC Plus: present address pincode
     source TEXT DEFAULT 'idspay',   -- where the data came from
     hit_count INTEGER DEFAULT 0,    -- times this entry was served from cache
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,  -- first time we fetched it
