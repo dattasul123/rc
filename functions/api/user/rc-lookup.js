@@ -21,20 +21,40 @@ function jsonResponse(body, status = 200) {
     });
 }
 
+// POST JSON to an IDSPay endpoint. Never throws: on a network or parse failure it
+// returns ok:false so a failing enrichment call can't abort the whole lookup.
+async function callIdsPay(url, body) {
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const text = await resp.text();
+        let json = {};
+        try {
+            json = text ? JSON.parse(text) : {};
+        } catch {
+            json = {};
+        }
+        return { ok: resp.ok, status: resp.status, json };
+    } catch {
+        return { ok: false, status: 0, json: {} };
+    }
+}
+
 function normalizeFieldName(key) {
     return String(key).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// Recursively find the first non-empty scalar whose (normalized) key matches one
-// of `candidateKeys`. Direct keys on the current object win over nested ones, so a
-// top-level `present_address` is preferred to a nested `address_line`. Provider
-// field names vary between endpoints, so we match on a small set of aliases.
-function findFieldValue(value, candidateKeys, depth = 0) {
-    if (!value || depth > 4) return '';
+// Depth-first search for the first non-empty scalar whose normalized key equals
+// `candidate`. A direct scalar on the current object wins over any nested match.
+function findByKey(value, candidate, depth = 0) {
+    if (!value || depth > 5) return '';
 
     if (Array.isArray(value)) {
         for (const item of value) {
-            const found = findFieldValue(item, candidateKeys, depth + 1);
+            const found = findByKey(item, candidate, depth + 1);
             if (found) return found;
         }
         return '';
@@ -43,33 +63,54 @@ function findFieldValue(value, candidateKeys, depth = 0) {
     if (typeof value !== 'object') return '';
 
     for (const [key, fieldValue] of Object.entries(value)) {
-        if (candidateKeys.includes(normalizeFieldName(key)) && fieldValue && typeof fieldValue !== 'object') {
+        if (normalizeFieldName(key) === candidate && fieldValue && typeof fieldValue !== 'object') {
             return String(fieldValue).trim();
         }
     }
 
     for (const fieldValue of Object.values(value)) {
-        const found = findFieldValue(fieldValue, candidateKeys, depth + 1);
+        const found = findByKey(fieldValue, candidate, depth + 1);
         if (found) return found;
     }
 
     return '';
 }
 
+// Try each alias in priority order and return the first hit. Priority follows the
+// order of `candidateKeys` (NOT the provider's key order), so e.g. present_address
+// always wins over permanent_address. Provider field names vary between endpoints.
+function findFieldValue(value, candidateKeys) {
+    for (const candidate of candidateKeys) {
+        const found = findByKey(value, candidate);
+        if (found) return found;
+    }
+    return '';
+}
+
 function readProviderMobile(value) {
+    // RC To Mobile v3 nests the resolved number at data.data.mobileNo.
     return findFieldValue(value, ['mobileno', 'mobilenumber', 'mobile']);
 }
 
 function readProviderName(value) {
-    // RC Premium V2 uses `owner`; other endpoints use `owner_name` / `ownerName`.
-    return findFieldValue(value, ['owner', 'ownername', 'name']);
+    // RC Advance V2 uses `owner_name`; other endpoints use `owner` / `ownerName`.
+    return findFieldValue(value, ['ownername', 'owner', 'name']);
+}
+
+// Normalize the free-text address for display: exactly one space after each comma
+// and no double spaces. Providers return it comma-packed with no spaces.
+function tidyAddress(address) {
+    return String(address || '').replace(/\s*,\s*/g, ', ').replace(/\s+/g, ' ').trim();
 }
 
 function readProviderAddress(value) {
-    return findFieldValue(value, ['presentaddress', 'addressline', 'permanentaddress', 'address']);
+    // RC Advance V2 returns the full `present_address` (plus a structured
+    // `split_present_address`); prefer present over permanent over address_line.
+    return tidyAddress(findFieldValue(value, ['presentaddress', 'permanentaddress', 'addressline', 'address']));
 }
 
-// Prefer an explicit pincode field; fall back to the last 6-digit run in the address.
+// Prefer an explicit pincode field (RC Advance: split_present_address.pincode);
+// fall back to the last 6-digit run in the address. May legitimately be empty.
 function readProviderPincode(value, address = '') {
     const explicit = findFieldValue(value, ['pincode', 'pin']);
     if (explicit) {
@@ -85,7 +126,11 @@ export async function onRequestPost(context) {
         const { request, env, data } = context;
         const userId = data.user.id;
         const { rcNumber } = await request.json();
-        const vehicleNumber = String(rcNumber || '').trim().toUpperCase();
+        // Canonicalize to bare alphanumerics (uppercase). Users type spaces/hyphens
+        // ("HR 26 EZ 2802"); RC Advance V2 rejects those, and inconsistent spacing
+        // would also fragment the shared cache. Both IDSPay endpoints accept the
+        // compact form.
+        const vehicleNumber = String(rcNumber || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
         if (!vehicleNumber) {
             return jsonResponse({ error: 'RC Number is required' }, 400);
@@ -149,44 +194,33 @@ export async function onRequestPost(context) {
             return jsonResponse({ success: false, message: 'RC lookup provider is not configured' }, 500);
         }
 
-        // --- IDSPay "RC Premium V2" API (POST /Rc-Premium-v2-verify) ---
-        //     Returns the full registration record (owner, address, mobile, …).
-        //     Fields are double-nested at data.data.*; the resolved mobile is at
-        //     data.mobileNo (inner data.mobileNumber is often null).
+        // Two IDSPay endpoints are queried in parallel for the same RC:
+        //   - RC To Mobile v3 (POST /srv1/rc-to-mobile)  -> mobile number (data.data.mobileNo)
+        //   - RC Advance V2   (POST /srv2/validation/rc) -> owner name + full present address
+        // The mobile is the essential deliverable (the lookup fails and charges
+        // nothing without one); name/address are best-effort enrichment from RC Advance.
         const baseUrl = (env.IDSPAY_BASE_URL || DEFAULT_IDSPAY_BASE_URL).replace(/\/+$/, '');
-        const apiResp = await fetch(`${baseUrl}/Rc-Premium-v2-verify`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                api_id: env.IDSPAY_API_ID,
-                api_key: env.IDSPAY_API_KEY,
-                token_id: env.IDSPAY_TOKEN_ID,
-                vehicle_num: vehicleNumber
-            })
-        });
+        const creds = {
+            api_id: env.IDSPAY_API_ID,
+            api_key: env.IDSPAY_API_KEY,
+            token_id: env.IDSPAY_TOKEN_ID
+        };
 
-        const responseText = await apiResp.text();
-        let apiJson = {};
-        try {
-            apiJson = responseText ? JSON.parse(responseText) : {};
-        } catch {
-            return jsonResponse({ success: false, message: 'RC lookup provider returned an invalid response' }, 502);
-        }
+        const [mobileCall, advanceCall] = await Promise.all([
+            callIdsPay(`${baseUrl}/srv1/rc-to-mobile`, { ...creds, vehicle_num: vehicleNumber }),
+            callIdsPay(`${baseUrl}/srv2/validation/rc`, { ...creds, reg_no: vehicleNumber })
+        ]);
 
-        const providerStatus = String(apiJson?.status?.type || '').trim().toLowerCase();
-        const providerData = apiJson?.data;
-        const providerMobile = String(readProviderMobile(providerData)).trim();
+        // --- Mobile number (required) ---
+        const mobileStatus = String(mobileCall?.json?.status?.type || '').trim().toLowerCase();
+        const providerMobile = String(readProviderMobile(mobileCall?.json?.data)).trim();
         const providerMobileDigits = providerMobile.replace(/\D/g, '');
         const normalizedMobile = providerMobileDigits.length === 12 && providerMobileDigits.startsWith('91')
             ? providerMobileDigits.slice(2)
             : providerMobileDigits;
 
-        const providerName = readProviderName(providerData);
-        const providerAddress = readProviderAddress(providerData);
-        const providerPincode = readProviderPincode(providerData, providerAddress);
-
-        if (!apiResp.ok || providerStatus !== 'success') {
-            const message = apiJson?.message || apiJson?.status?.message || 'RC details lookup failed';
+        if (!mobileCall?.ok || mobileStatus !== 'success') {
+            const message = mobileCall?.json?.message || mobileCall?.json?.status?.message || 'RC to Mobile lookup failed';
             return jsonResponse({ success: false, message }, 502);
         }
 
@@ -204,6 +238,14 @@ export async function onRequestPost(context) {
                 message: 'Provider returned masked/sample data. Confirm the production API credentials and endpoint are active.'
             }, 502);
         }
+
+        // --- Owner name + address (best-effort, from RC Advance V2) ---
+        const advanceData = advanceCall?.json?.data;
+        const advanceOk = Boolean(advanceCall?.ok)
+            && String(advanceCall?.json?.status?.type || '').trim().toLowerCase() === 'success';
+        const providerName = advanceOk ? readProviderName(advanceData) : '';
+        const providerAddress = advanceOk ? readProviderAddress(advanceData) : '';
+        const providerPincode = advanceOk ? readProviderPincode(advanceData, providerAddress) : '';
 
         const result = {
             mobileNumber: normalizedMobile,
