@@ -2,14 +2,8 @@ import {
     getUserById,
     deductCredit,
     saveLookupHistory,
-    getCachedRcLookup,
-    saveRcToCache,
-    incrementCacheHit,
     getPremiumThreshold
 } from '../../utils/db.js';
-
-// Serve a cached RC->mobile result if it was fetched within this many days.
-const RC_CACHE_MAX_AGE_DAYS = 90;
 
 const DEFAULT_IDSPAY_BASE_URL = 'https://javabackend.idspay.in/api/v1/prod';
 const REQUIRED_IDSPAY_ENV = ['IDSPAY_API_ID', 'IDSPAY_API_KEY', 'IDSPAY_TOKEN_ID'];
@@ -127,9 +121,8 @@ export async function onRequestPost(context) {
         const userId = data.user.id;
         const { rcNumber } = await request.json();
         // Canonicalize to bare alphanumerics (uppercase). Users type spaces/hyphens
-        // ("HR 26 EZ 2802"); RC Advance V2 rejects those, and inconsistent spacing
-        // would also fragment the shared cache. Both IDSPay endpoints accept the
-        // compact form.
+        // ("HR 26 EZ 2802"); RC Advance V2 rejects those. Both IDSPay endpoints
+        // accept the compact form.
         const vehicleNumber = String(rcNumber || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
         if (!vehicleNumber) {
@@ -141,7 +134,7 @@ export async function onRequestPost(context) {
         }
 
         // Global "premium" threshold set by admin: a user must have MORE than this
-        // many credits to run a lookup (including free cache hits). Applies to all users.
+        // many credits to run a lookup. Applies to all users.
         const premiumThreshold = await getPremiumThreshold(env.DB);
 
         const user = await getUserById(env.DB, userId);
@@ -152,41 +145,8 @@ export async function onRequestPost(context) {
             return jsonResponse({ error: message }, 403);
         }
 
-        // --- Shared cache: if any user already looked up this RC (and it's still
-        //     fresh), serve it from our DB without calling the paid provider.
-        //     Cache hits are free — no credit is deducted. ---
-        const cached = await getCachedRcLookup(env.DB, vehicleNumber, RC_CACHE_MAX_AGE_DAYS);
-        if (cached) {
-            const result = {
-                mobileNumber: cached.mobile_number,
-                ownerName: cached.owner_name || 'N/A',
-                address: cached.present_address || 'N/A',
-                pincode: cached.pincode || 'N/A',
-                vehicleNumber,
-                rcNumber: vehicleNumber
-            };
-
-            await incrementCacheHit(env.DB, vehicleNumber);
-            await saveLookupHistory(env.DB, {
-                userId,
-                rcNumber: result.rcNumber,
-                mobileNumber: result.mobileNumber,
-                ownerName: result.ownerName,
-                vehicleNumber: result.vehicleNumber,
-                presentAddress: cached.present_address || null,
-                pincode: cached.pincode || null,
-                creditsDeducted: 0
-            });
-
-            return jsonResponse({
-                success: true,
-                data: result,
-                cached: true,
-                creditsDeducted: 0,
-                remainingCredits: user.credits
-            });
-        }
-        // ---------------------------------------------------------------------
+        // Every lookup queries the provider live — there is no result cache.
+        // (A shared cache previously served stale data from superseded endpoints.)
 
         const missingEnv = REQUIRED_IDSPAY_ENV.filter((key) => !env[key]);
         if (missingEnv.length > 0) {
@@ -256,17 +216,6 @@ export async function onRequestPost(context) {
             rcNumber: vehicleNumber
         };
         // --------------------------------------------------------------
-
-        // Persist to the shared cache first, so this paid result is reusable by
-        // any user even if the credit deduction below fails for this request.
-        await saveRcToCache(env.DB, {
-            rcNumber: result.rcNumber,
-            mobileNumber: result.mobileNumber,
-            ownerName: providerName || null,
-            vehicleNumber: result.vehicleNumber,
-            presentAddress: providerAddress || null,
-            pincode: providerPincode || null
-        });
 
         // Deduct credit (only after a successful lookup)
         const deducted = await deductCredit(env.DB, { userId, rcNumber: result.rcNumber });
