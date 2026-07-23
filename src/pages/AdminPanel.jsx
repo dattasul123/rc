@@ -12,7 +12,8 @@ export default function AdminPanel() {
     const [creditAction, setCreditAction] = useState('add'); // 'add' | 'deduct'
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
-    const [activeTab, setActiveTab] = useState('users');
+    const [activeTab, setActiveTab] = useState('users'); // 'users' | 'transactions' | 'calculator'
+    const [calcPrice, setCalcPrice] = useState(50);
     const [providerWallet, setProviderWallet] = useState({
         configured: false,
         available: false,
@@ -466,6 +467,12 @@ export default function AdminPanel() {
                             >
                                 Transaction History
                             </button>
+                            <button 
+                                className={`flex-1 py-4 text-sm font-medium text-center transition-colors ${activeTab === 'calculator' ? 'text-indigo-400 border-b-2 border-indigo-400 bg-indigo-500/5' : 'text-slate-400 hover:text-slate-200'}`}
+                                onClick={() => setActiveTab('calculator')}
+                            >
+                                Deal Calculator
+                            </button>
                         </div>
 
                         <div className="flex-1 overflow-auto p-3 sm:p-4 custom-scrollbar">
@@ -554,6 +561,78 @@ export default function AdminPanel() {
                                         ))}
                                     </tbody>
                                 </table>
+                            ) : activeTab === 'calculator' ? (
+                                <div className="p-4 max-w-2xl mx-auto space-y-6">
+                                    <div className="text-center mb-6">
+                                        <h3 className="text-2xl font-bold text-white mb-2">B2B Deal Calculator</h3>
+                                        <p className="text-slate-400 text-sm">Enter the requested price per call to see what terms you should counter-offer to protect your margins.</p>
+                                    </div>
+                                    
+                                    <div className="bg-slate-900/50 p-6 rounded-xl border border-white/10">
+                                        <label className="block text-sm font-medium text-slate-300 mb-2">Client's Requested Price Per Call (₹)</label>
+                                        <div className="flex items-center gap-4">
+                                            <input 
+                                                type="range" 
+                                                min="30" max="100" step="5"
+                                                value={calcPrice}
+                                                onChange={(e) => setCalcPrice(Number(e.target.value))}
+                                                className="flex-1 accent-indigo-500"
+                                            />
+                                            <div className="w-24 relative">
+                                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">₹</span>
+                                                <input 
+                                                    type="number" 
+                                                    value={calcPrice}
+                                                    onChange={(e) => setCalcPrice(Number(e.target.value))}
+                                                    className="input-field pl-8 font-bold text-lg"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-4 mt-6">
+                                        <div className="bg-white/5 border border-indigo-500/30 p-5 rounded-xl">
+                                            <h4 className="text-indigo-400 font-semibold mb-1">1. Minimum Monthly Volume</h4>
+                                            <p className="text-white text-lg font-bold">
+                                                {calcPrice >= 100 ? 'No minimum volume required (Standard Tier)' :
+                                                 calcPrice >= 80 ? '1,000 calls / month (₹80,000)' :
+                                                 calcPrice >= 70 ? '2,500 calls / month (₹175,000)' :
+                                                 calcPrice >= 60 ? '5,000 calls / month (₹300,000)' :
+                                                 calcPrice >= 50 ? '10,000 calls / month (₹500,000)' :
+                                                 '25,000+ calls / month (Enterprise Contract)'}
+                                            </p>
+                                            <p className="text-sm text-slate-400 mt-2">If they cannot commit to this volume, push them up to the next pricing tier.</p>
+                                        </div>
+
+                                        <div className="bg-white/5 border border-amber-500/30 p-5 rounded-xl">
+                                            <h4 className="text-amber-400 font-semibold mb-1">2. Payment Terms</h4>
+                                            <p className="text-white">
+                                                {calcPrice >= 90 ? 'Pay-as-you-go / Postpaid allowed' :
+                                                 calcPrice >= 70 ? '100% Monthly Upfront (Prepaid Wallet)' :
+                                                 'Billed Annually Upfront or strictly prepaid with auto-recharge.'}
+                                            </p>
+                                        </div>
+
+                                        <div className="bg-white/5 border border-green-500/30 p-5 rounded-xl">
+                                            <h4 className="text-green-400 font-semibold mb-1">3. Credit Expiration</h4>
+                                            <p className="text-white">
+                                                {calcPrice >= 80 ? 'Credits never expire' :
+                                                 'Strictly Use-it-or-lose-it. Unused credits expire every 30 days.'}
+                                            </p>
+                                        </div>
+
+                                        {calcPrice <= 60 && (
+                                            <div className="bg-white/5 border border-red-500/30 p-5 rounded-xl">
+                                                <h4 className="text-red-400 font-semibold mb-1">4. Technical Concessions (Strictly Enforce)</h4>
+                                                <ul className="list-disc list-inside text-white space-y-1 mt-2">
+                                                    <li>Rate limited to 10-15 requests per minute.</li>
+                                                    <li>No priority support (Email only, 48hr response time).</li>
+                                                    <li>No SLA guarantees for uptime.</li>
+                                                </ul>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
                             )}
                         </div>
                     </div>
