@@ -2,17 +2,77 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
-// Terms ladder for B2B deals. Rebased on the deals that actually close: the
-// largest so far is 400 credits, so the gate is the size of the cheque, not a
-// monthly call volume nobody in this market reaches.
-const DEAL_TIERS = [
-    { minPrice: 99, credits: 25, validity: '12 months', payment: 'Pay-as-you-go, invoiced on use' },
-    { minPrice: 85, credits: 50, validity: '12 months', payment: 'Pay-as-you-go, invoiced monthly' },
-    { minPrice: 75, credits: 100, validity: '6 months', payment: '100% prepaid' },
-    { minPrice: 65, credits: 250, validity: '6 months', payment: '100% prepaid' },
-    { minPrice: 55, credits: 400, validity: '90 days', payment: '100% prepaid' },
-    { minPrice: 45, credits: 750, validity: '90 days', payment: '100% prepaid + auto-recharge mandate' },
-    { minPrice: 0, credits: 1500, validity: '60 days, no rollover', payment: 'Annual prepaid only — escalate before agreeing' }
+// Published rate card. Every discount is quoted against this, never invented on
+// the spot — a number you can say out loud is worth more than a slider.
+const LIST_PRICE = 99;
+
+// Fixed plans to pitch from. Titanium reproduces the largest deal closed so far
+// (400 credits / Rs.25,000) and is marked most popular because it is the easy
+// yes; Black exists so Titanium is not the top of the ladder and the client has
+// somewhere to be talked up to.
+// Tailwind classes are written out in full — the scanner cannot see names built
+// by string concatenation at runtime.
+const PLANS = [
+    {
+        id: 'silver',
+        name: 'Silver',
+        credits: 100,
+        price: 89,
+        badge: null,
+        blurb: 'For a team testing the water.',
+        validity: '6 months',
+        payment: '100% prepaid',
+        perks: ['Owner name, address & pincode', 'Email support (48h)', 'Dashboard access'],
+        card: 'bg-slate-500/5 border-slate-400/30',
+        accent: 'text-slate-300',
+        chip: 'bg-slate-400/20 text-slate-200',
+        rule: 'border-slate-400/20'
+    },
+    {
+        id: 'gold',
+        name: 'Gold',
+        credits: 250,
+        price: 75,
+        badge: null,
+        blurb: 'The standard commercial pack.',
+        validity: '6 months',
+        payment: '100% prepaid',
+        perks: ['Everything in Silver', 'Priority WhatsApp support', 'Locked pricing for 12 months'],
+        card: 'bg-amber-500/5 border-amber-400/30',
+        accent: 'text-amber-300',
+        chip: 'bg-amber-400/20 text-amber-200',
+        rule: 'border-amber-400/20'
+    },
+    {
+        id: 'titanium',
+        name: 'Titanium',
+        credits: 400,
+        price: 62.5,
+        badge: 'MOST POPULAR',
+        blurb: 'What most partners settle on.',
+        validity: '90 days',
+        payment: '100% prepaid',
+        perks: ['Everything in Gold', 'Dedicated account contact', 'Free onboarding & walkthrough'],
+        card: 'bg-indigo-500/10 border-indigo-400/60',
+        accent: 'text-indigo-300',
+        chip: 'bg-indigo-400/20 text-indigo-200',
+        rule: 'border-indigo-400/20'
+    },
+    {
+        id: 'black',
+        name: 'Black',
+        credits: 750,
+        price: 55,
+        badge: 'BEST VALUE',
+        blurb: 'Best per-call rate we issue.',
+        validity: '90 days',
+        payment: '100% prepaid + auto-recharge',
+        perks: ['Everything in Titanium', 'Rollover on timely recharge', 'First look at new data sources'],
+        card: 'bg-emerald-500/5 border-emerald-400/40',
+        accent: 'text-emerald-300',
+        chip: 'bg-emerald-400/20 text-emerald-200',
+        rule: 'border-emerald-400/20'
+    }
 ];
 
 export default function AdminPanel() {
@@ -26,14 +86,18 @@ export default function AdminPanel() {
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
     const [activeTab, setActiveTab] = useState('users'); // 'users' | 'transactions' | 'calculator'
-    // Deal calculator inputs. Defaults reproduce the largest deal closed so far:
-    // 400 credits for Rs.25,000 (Rs.62.50/call).
-    const [calcCredits, setCalcCredits] = useState(400);
-    const [calcPrice, setCalcPrice] = useState(62.5);
+    // Off by default and must stay that way: this tab gets turned around to face
+    // a client, and nothing about cost or margin can be on screen when it does.
+    const [showInternals, setShowInternals] = useState(false);
     const [calcCost, setCalcCost] = useState(10);      // what IDSPay bills per API call
     const [calcDualCall, setCalcDualCall] = useState(true);  // we hit 2 endpoints per lookup
     const [calcUtilisation, setCalcUtilisation] = useState(70); // % of credits they actually burn
     const [calcSuccessRate, setCalcSuccessRate] = useState(85); // % of attempts that return a mobile
+
+    // Wallet exposure planner.
+    const [walletGrant, setWalletGrant] = useState(400);   // credits about to be handed out
+    const [walletOverride, setWalletOverride] = useState(''); // type the real balance if the API is stale/down
+    const [walletBuffer, setWalletBuffer] = useState(20);  // % held back to cover IDSPay's reporting lag
     const [providerWallet, setProviderWallet] = useState({
         configured: false,
         available: false,
@@ -271,40 +335,83 @@ export default function AdminPanel() {
     // Our true cost per *billed* credit is not the raw provider rate: rc-lookup.js
     // fires two IDSPay endpoints per lookup, and only charges the client when a
     // mobile number comes back. Failed attempts cost us money and earn nothing.
-    const LIST_PRICE = 99; // public rate card, the anchor we discount from
-    const inr = (n) => `₹${Math.round(n).toLocaleString('en-IN')}`;
+    const inr = (n) => `\u20b9${Math.round(n).toLocaleString('en-IN')}`;
 
-    const dealValue = calcCredits * calcPrice;
-    const usedCredits = calcCredits * (calcUtilisation / 100);
-    const unusedCredits = calcCredits - usedCredits;
     const callsPerLookup = calcDualCall ? 2 : 1;
     const attemptsPerCredit = calcSuccessRate > 0 ? 100 / calcSuccessRate : 0;
     const trueCostPerCredit = calcCost * callsPerLookup * attemptsPerCredit;
-    const providerCost = usedCredits * trueCostPerCredit;
-    const grossProfit = dealValue - providerCost;
-    const marginPct = dealValue > 0 ? (grossProfit / dealValue) * 100 : 0;
-    // Credits sold but never burnt are 100% margin -- the single biggest lever.
-    const breakageProfit = unusedCredits * calcPrice;
-    const realisedPerUsedCall = usedCredits > 0 ? dealValue / usedCredits : 0;
-    const breakEvenPrice = calcCredits > 0 ? providerCost / calcCredits : 0;
-    const discountPct = (1 - calcPrice / LIST_PRICE) * 100;
 
-    const verdict = marginPct >= 70 ? { label: 'Strong — close it today', tone: 'green' }
-        : marginPct >= 55 ? { label: 'Healthy — standard terms', tone: 'green' }
-        : marginPct >= 40 ? { label: 'Thin — take concessions in exchange', tone: 'amber' }
-        : marginPct >= 25 ? { label: 'Floor — full prepay only', tone: 'amber' }
-        : { label: 'Loss-making — restructure or walk', tone: 'red' };
+    // Everything a plan is worth, precomputed once so the cards stay dumb.
+    const planRows = PLANS.map((plan) => {
+        // Round the goodwill gift to a whole 25-credit block, but never to zero —
+        // 10% of the smallest plan rounds down to nothing.
+        const gift = Math.max(25, Math.round(plan.credits * 0.1 / 25) * 25);
+        const total = plan.credits * plan.price;
+        const listTotal = plan.credits * LIST_PRICE;
+        const usedCredits = plan.credits * (calcUtilisation / 100);
+        const providerCost = usedCredits * trueCostPerCredit;
+        const grossProfit = total - providerCost;
+        return {
+            ...plan,
+            total,
+            listTotal,
+            savings: listTotal - total,
+            discountPct: Math.round((1 - plan.price / LIST_PRICE) * 100),
+            grossProfit,
+            marginPct: total > 0 ? (grossProfit / total) * 100 : 0,
+            // Credits sold but never burnt are 100% margin -- the biggest lever.
+            breakageProfit: (plan.credits - usedCredits) * plan.price,
+            // A free credit costs us trueCostPerCredit but reads as LIST_PRICE of
+            // value. That leverage is why we add credits instead of cutting rate.
+            sweetenerCredits: gift,
+            sweetenerRealCost: gift * trueCostPerCredit,
+            sweetenerPerceived: gift * LIST_PRICE,
+            discountAlternativeCost: total * 0.1
+        };
+    });
 
-    // A free credit costs us trueCostPerCredit but reads as LIST_PRICE of value.
-    // That leverage is why we always add credits instead of cutting the rate.
-    const sweetenerCredits = Math.max(25, Math.round(calcCredits * 0.1 / 25) * 25);
-    const sweetenerRealCost = sweetenerCredits * trueCostPerCredit;
-    const sweetenerPerceived = sweetenerCredits * LIST_PRICE;
-    // The like-for-like discount we would otherwise have conceded.
-    const discountAlternativeCost = calcCredits * (calcPrice * 0.1);
+    // --- Wallet exposure ------------------------------------------------------
+    // Credits we have handed out but clients have not burnt yet are a claim on
+    // the IDSPay wallet. Each unspent credit will eventually pull
+    // (cost x endpoints / success rate) rupees out of it, so the question
+    // "can I grant this many credits" is really "is the wallet deep enough to
+    // honour everything already sold, plus this".
+    const drainPerCredit = trueCostPerCredit;
 
-    const tier = DEAL_TIERS.find((t) => calcPrice >= t.minPrice);
-    const commitmentShortfall = calcCredits < tier.credits;
+    const liveBalance = Number(providerWallet.balance);
+    const hasLiveBalance = providerWallet.available && Number.isFinite(liveBalance);
+    const walletBalance = walletOverride.trim() !== ''
+        ? Number(walletOverride)
+        : (hasLiveBalance ? liveBalance : 0);
+    const walletBalanceKnown = walletOverride.trim() !== '' || hasLiveBalance;
+
+    // c -- credits sold but not yet availed, straight off the user directory.
+    const outstandingCredits = users.reduce((sum, u) => sum + (Number(u.credits) || 0), 0);
+    const grantCredits = Number(walletGrant) || 0;
+    const bufferMultiplier = 1 + (Number(walletBuffer) || 0) / 100;
+
+    const currentLiability = outstandingCredits * drainPerCredit;
+    const afterGrantLiability = (outstandingCredits + grantCredits) * drainPerCredit;
+    const requiredBalance = afterGrantLiability * bufferMultiplier;
+    const topUpNeeded = Math.max(0, requiredBalance - walletBalance);
+    const walletHeadroom = walletBalance - currentLiability;
+    // How many more credits could be granted before the wallet stops covering it.
+    const maxSafeGrant = drainPerCredit > 0
+        ? Math.max(0, Math.floor(walletBalance / bufferMultiplier / drainPerCredit) - outstandingCredits)
+        : 0;
+
+    // SQLite stores CURRENT_TIMESTAMP as UTC without a zone marker; parsing it
+    // raw makes the browser read it as local time and skews the window by +5:30.
+    const parseUtc = (s) => new Date(`${String(s).replace(' ', 'T')}Z`);
+    const burnWindowDays = 7;
+    const windowStart = Date.now() - burnWindowDays * 86400000;
+    const creditsBurntInWindow = transactions
+        .filter((t) => t.type === 'debit' && parseUtc(t.created_at).getTime() >= windowStart)
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const creditsPerDay = creditsBurntInWindow / burnWindowDays;
+    const runwayDays = creditsPerDay > 0 && drainPerCredit > 0
+        ? walletBalance / drainPerCredit / creditsPerDay
+        : null;
 
     return (
         <div className="min-h-screen p-3 sm:p-6 max-w-6xl mx-auto space-y-4 sm:space-y-6">
@@ -512,26 +619,27 @@ export default function AdminPanel() {
                 </div>
 
                 <div className="lg:col-span-2">
-                    <div className="glass-panel overflow-hidden h-[70vh] sm:h-[600px] flex flex-col">
-                        <div className="flex border-b border-white/10">
-                            <button 
-                                className={`flex-1 py-4 text-sm font-medium text-center transition-colors ${activeTab === 'users' ? 'text-indigo-400 border-b-2 border-indigo-400 bg-indigo-500/5' : 'text-slate-400 hover:text-slate-200'}`}
-                                onClick={() => setActiveTab('users')}
-                            >
-                                User Directory
-                            </button>
-                            <button 
-                                className={`flex-1 py-4 text-sm font-medium text-center transition-colors ${activeTab === 'transactions' ? 'text-indigo-400 border-b-2 border-indigo-400 bg-indigo-500/5' : 'text-slate-400 hover:text-slate-200'}`}
-                                onClick={() => setActiveTab('transactions')}
-                            >
-                                Transaction History
-                            </button>
-                            <button 
-                                className={`flex-1 py-4 text-sm font-medium text-center transition-colors ${activeTab === 'calculator' ? 'text-indigo-400 border-b-2 border-indigo-400 bg-indigo-500/5' : 'text-slate-400 hover:text-slate-200'}`}
-                                onClick={() => setActiveTab('calculator')}
-                            >
-                                Deal Calculator
-                            </button>
+                    {/* Fixed height only from sm up. On a phone the panel grows with
+                        its content so the page scrolls once, instead of trapping
+                        four plan cards inside a 70vh box. */}
+                    <div className="glass-panel overflow-hidden sm:h-[600px] flex flex-col">
+                        {/* Tabs scroll rather than squeeze: flex-1 would shrink four
+                            labels below their text width on a 375px screen. */}
+                        <div className="flex border-b border-white/10 overflow-x-auto custom-scrollbar">
+                            {[
+                                { id: 'users', label: 'Users' },
+                                { id: 'transactions', label: 'Transactions' },
+                                { id: 'calculator', label: 'Plans' },
+                                { id: 'wallet', label: 'Wallet' }
+                            ].map((t) => (
+                                <button
+                                    key={t.id}
+                                    className={`flex-1 shrink-0 py-4 px-4 text-sm font-medium text-center whitespace-nowrap transition-colors ${activeTab === t.id ? 'text-indigo-400 border-b-2 border-indigo-400 bg-indigo-500/5' : 'text-slate-400 hover:text-slate-200'}`}
+                                    onClick={() => setActiveTab(t.id)}
+                                >
+                                    {t.label}
+                                </button>
+                            ))}
                         </div>
 
                         <div className="flex-1 overflow-auto p-3 sm:p-4 custom-scrollbar">
@@ -621,219 +729,386 @@ export default function AdminPanel() {
                                     </tbody>
                                 </table>
                             ) : activeTab === 'calculator' ? (
-                                <div className="p-2 sm:p-4 max-w-3xl mx-auto space-y-5">
-                                    <div className="text-center mb-2">
-                                        <h3 className="text-2xl font-bold text-white mb-2">B2B Deal Calculator</h3>
-                                        <p className="text-slate-400 text-sm">Model the real margin on a deal before you agree to it, and see what to concede instead of cutting the rate.</p>
+                                <div className="p-2 sm:p-4 space-y-6">
+                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                        <div>
+                                            <h3 className="text-2xl font-bold text-white">Plans</h3>
+                                            <p className="text-slate-400 text-sm mt-1">
+                                                All rates below our published ₹{LIST_PRICE}/call rate card.
+                                            </p>
+                                        </div>
+                                        {/* Deliberately unlabelled in client terms and off on every load. */}
+                                        <button
+                                            onClick={() => setShowInternals(!showInternals)}
+                                            className={`text-xs px-3 py-2 rounded-lg border transition-colors ${
+                                                showInternals
+                                                    ? 'bg-red-500/20 border-red-500/50 text-red-300'
+                                                    : 'bg-white/5 border-white/10 text-slate-400 hover:text-slate-200'
+                                            }`}
+                                        >
+                                            {showInternals ? '● Margin view ON — hide before sharing screen' : 'Margin view'}
+                                        </button>
                                     </div>
 
-                                    {/* --- What the client is asking for --- */}
-                                    <div className="bg-slate-900/50 p-5 rounded-xl border border-white/10 space-y-5">
-                                        <div>
-                                            <div className="flex justify-between items-baseline mb-2">
-                                                <label className="text-sm font-medium text-slate-300">Credits in the deal</label>
-                                                <span className="text-lg font-bold text-white">{calcCredits.toLocaleString('en-IN')}</span>
-                                            </div>
-                                            <input
-                                                type="range"
-                                                min="25" max="1000" step="25"
-                                                value={calcCredits}
-                                                onChange={(e) => setCalcCredits(Number(e.target.value))}
-                                                className="w-full accent-indigo-500"
-                                            />
-                                        </div>
+                                    {/* ---------- The pitch: four fixed cards ---------- */}
+                                    {/* Two-up max: the panel is only ~750px wide even on a
+                                        large screen, so four columns would crush the price.
+                                        pt-3 keeps the discount pill off the scroll edge. */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 gap-y-6 pt-3">
+                                        {planRows.map((p) => (
+                                            <div key={p.id} className="relative flex">
+                                                {/* Discount sits above the card, as the headline number. */}
+                                                <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-10">
+                                                    <span className={`text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap ${p.chip}`}>
+                                                        {p.discountPct}% OFF
+                                                    </span>
+                                                </div>
 
-                                        <div>
-                                            <div className="flex justify-between items-baseline mb-2">
-                                                <label className="text-sm font-medium text-slate-300">Price per call</label>
-                                                <span className="text-lg font-bold text-white">₹{calcPrice.toLocaleString('en-IN')}</span>
+                                                <div className={`flex flex-col w-full pt-7 pb-5 px-5 rounded-2xl border ${p.card} ${
+                                                    p.badge === 'MOST POPULAR' ? 'ring-2 ring-indigo-400/40' : ''
+                                                }`}>
+                                                    {p.badge && (
+                                                        <div className={`text-[10px] font-bold tracking-widest mb-2 ${p.accent}`}>
+                                                            {p.badge}
+                                                        </div>
+                                                    )}
+
+                                                    <h4 className={`text-xl font-bold ${p.accent}`}>{p.name}</h4>
+                                                    <p className="text-xs text-slate-400 mt-1 min-h-[2rem]">{p.blurb}</p>
+
+                                                    <div className={`mt-4 pt-4 border-t ${p.rule}`}>
+                                                        <div className="flex items-baseline gap-1">
+                                                            <span className="text-3xl font-bold text-white">₹{p.price}</span>
+                                                            <span className="text-sm text-slate-400">/ call</span>
+                                                        </div>
+                                                        <div className="text-sm text-slate-500 line-through mt-1">₹{LIST_PRICE} / call</div>
+                                                    </div>
+
+                                                    <div className={`mt-4 pt-4 border-t ${p.rule}`}>
+                                                        <div className="text-2xl font-bold text-white">{inr(p.total)}</div>
+                                                        <div className="text-xs text-slate-400 mt-1">
+                                                            {p.credits.toLocaleString('en-IN')} lookups, paid upfront
+                                                        </div>
+                                                        <div className={`text-sm font-semibold mt-2 ${p.accent}`}>
+                                                            You save {inr(p.savings)}
+                                                        </div>
+                                                    </div>
+
+                                                    <ul className="mt-4 space-y-2 text-xs text-slate-300 flex-1">
+                                                        {p.perks.map((perk) => (
+                                                            <li key={perk} className="flex gap-2">
+                                                                <span className={p.accent}>✓</span>
+                                                                <span>{perk}</span>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+
+                                                    <div className={`mt-4 pt-3 border-t ${p.rule} text-xs text-slate-400 space-y-1`}>
+                                                        <div>Valid {p.validity}</div>
+                                                        <div>{p.payment}</div>
+                                                    </div>
+
+                                                    {showInternals && (
+                                                        <div className="mt-3 pt-3 border-t border-red-500/30 text-xs space-y-1">
+                                                            <div className="flex justify-between">
+                                                                <span className="text-slate-500">Margin</span>
+                                                                <span className="text-white font-semibold">{p.marginPct.toFixed(0)}%</span>
+                                                            </div>
+                                                            <div className="flex justify-between">
+                                                                <span className="text-slate-500">Profit</span>
+                                                                <span className="text-white font-semibold">{inr(p.grossProfit)}</span>
+                                                            </div>
+                                                            <div className="flex justify-between">
+                                                                <span className="text-slate-500">Breakage</span>
+                                                                <span className="text-white font-semibold">{inr(p.breakageProfit)}</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    <p className="text-xs text-slate-500 text-center">
+                                        Pilot available: 25 lookups at ₹{LIST_PRICE}/call, deductible from the first plan they buy.
+                                    </p>
+
+                                    {/* ---------- Everything below is for you only ---------- */}
+                                    {showInternals && (
+                                        <div className="space-y-4 pt-2">
+                                            <div className="bg-red-500/10 border border-red-500/40 rounded-xl p-3">
+                                                <p className="text-xs text-red-300">
+                                                    Internal only — cost, margin and negotiation notes. Turn this off before you show anyone this screen.
+                                                </p>
+                                            </div>
+
+                                            <div className="bg-slate-900/50 p-5 rounded-xl border border-white/10">
+                                                <h4 className="text-sm font-semibold text-slate-300 mb-4">Cost assumptions</h4>
+                                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                                                    <div>
+                                                        <label className="block text-xs text-slate-400 mb-1">IDSPay ₹/call</label>
+                                                        <input
+                                                            type="number" min="0" step="0.5"
+                                                            value={calcCost}
+                                                            onChange={(e) => setCalcCost(Number(e.target.value))}
+                                                            className="input-field text-sm"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs text-slate-400 mb-1">Utilisation %</label>
+                                                        <input
+                                                            type="number" min="1" max="100" step="5"
+                                                            value={calcUtilisation}
+                                                            onChange={(e) => setCalcUtilisation(Number(e.target.value))}
+                                                            className="input-field text-sm"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs text-slate-400 mb-1">Success rate %</label>
+                                                        <input
+                                                            type="number" min="1" max="100" step="5"
+                                                            value={calcSuccessRate}
+                                                            onChange={(e) => setCalcSuccessRate(Number(e.target.value))}
+                                                            className="input-field text-sm"
+                                                        />
+                                                    </div>
+                                                    <div className="flex items-end">
+                                                        <label className="flex items-center gap-2 cursor-pointer pb-2">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={calcDualCall}
+                                                                onChange={(e) => setCalcDualCall(e.target.checked)}
+                                                                className="accent-indigo-500"
+                                                            />
+                                                            <span className="text-xs text-slate-400">2 endpoints billed</span>
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                                <p className="text-xs text-slate-500 mt-3">
+                                                    True cost per delivered credit: <span className="text-white font-semibold">{inr(trueCostPerCredit)}</span>
+                                                    {' '}— {callsPerLookup} call{callsPerLookup > 1 ? 's' : ''} × ₹{calcCost}, ÷ {calcSuccessRate}% success.
+                                                    Failed lookups aren't charged to the client, so you absorb them.
+                                                </p>
+                                            </div>
+
+                                            <div className="bg-white/5 border border-indigo-500/30 p-5 rounded-xl">
+                                                <h4 className="text-indigo-400 font-semibold mb-3">If they push back — add credits, never cut the rate</h4>
+                                                <div className="overflow-x-auto">
+                                                    <table className="w-full text-sm min-w-[480px]">
+                                                        <thead className="text-slate-400 text-xs">
+                                                            <tr className="border-b border-white/10">
+                                                                <th className="text-left pb-2">Plan</th>
+                                                                <th className="text-right pb-2">Gift credits</th>
+                                                                <th className="text-right pb-2">Sounds like</th>
+                                                                <th className="text-right pb-2">Really costs</th>
+                                                                <th className="text-right pb-2">vs 10% off</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {planRows.map((p) => (
+                                                                <tr key={p.id} className="border-b border-white/5">
+                                                                    <td className={`py-2 font-medium ${p.accent}`}>{p.name}</td>
+                                                                    <td className="py-2 text-right text-white">{p.sweetenerCredits}</td>
+                                                                    <td className="py-2 text-right text-green-400">{inr(p.sweetenerPerceived)}</td>
+                                                                    <td className="py-2 text-right text-white">{inr(p.sweetenerRealCost)}</td>
+                                                                    <td className="py-2 text-right text-red-400">{inr(p.discountAlternativeCost)}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <p className="text-xs text-slate-400 mt-3">
+                                                    The rate is a ratchet — once quoted, you never get back up with that client. Gifted credits reset to zero next contract.
+                                                </p>
+                                            </div>
+
+                                            <div className="bg-white/5 border border-white/10 p-5 rounded-xl">
+                                                <h4 className="text-slate-200 font-semibold mb-1">Free to give, in this order</h4>
+                                                <p className="text-xs text-slate-400 mb-3">Spend these before touching price. One at a time, and ask for something back each time.</p>
+                                                <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
+                                                    <li>Double the validity — breakage still lands, it just lands later.</li>
+                                                    <li>Rollover of unused credits, but only if they recharge before expiry.</li>
+                                                    <li>Priority WhatsApp line — a few messages a week at this volume.</li>
+                                                    <li>Free onboarding call and dashboard walkthrough.</li>
+                                                    <li>25-credit pilot at rate card, deductible from their first plan.</li>
+                                                    <li>12-month price lock — costs nothing today, blocks a renegotiation later.</li>
+                                                </ul>
+                                            </div>
+
+                                            <div className="bg-white/5 border border-amber-500/30 p-5 rounded-xl">
+                                                <h4 className="text-amber-400 font-semibold mb-2">Floor</h4>
+                                                <p className="text-sm text-slate-300">
+                                                    Below ₹55/call you are past the published ladder. Anything lower needs 750+ credits prepaid,
+                                                    a 10 req/min rate limit framed as fair-use, email-only support and no SLA — or you walk.
+                                                    Never discount and extend validity in the same breath.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : activeTab === 'wallet' ? (
+                                <div className="p-2 sm:p-4 space-y-5">
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-white">Wallet exposure</h3>
+                                        <p className="text-slate-400 text-sm mt-1">
+                                            Credits you've handed out are a claim on the IDSPay wallet. This says whether it's deep enough to honour them.
+                                        </p>
+                                    </div>
+
+                                    {/* --- a, b, c --- */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                        <div className="bg-slate-900/50 p-4 rounded-xl border border-white/10">
+                                            <div className="flex items-baseline justify-between mb-2">
+                                                <label className="text-xs font-semibold text-slate-300">a · Wallet balance</label>
+                                                {hasLiveBalance && walletOverride.trim() === '' && (
+                                                    <span className="text-[10px] text-green-400">LIVE</span>
+                                                )}
                                             </div>
                                             <input
-                                                type="range"
-                                                min="30" max="120" step="2.5"
-                                                value={calcPrice}
-                                                onChange={(e) => setCalcPrice(Number(e.target.value))}
-                                                className="w-full accent-indigo-500"
+                                                type="number" min="0" step="100"
+                                                value={walletOverride}
+                                                placeholder={hasLiveBalance ? String(liveBalance) : 'enter balance'}
+                                                onChange={(e) => setWalletOverride(e.target.value)}
+                                                className="input-field text-sm"
                                             />
-                                            <p className="text-xs text-slate-500 mt-2">
-                                                {discountPct > 0
-                                                    ? `Sell this as ${Math.round(discountPct)}% off the ₹${LIST_PRICE} rate card — never quote it as a low price.`
-                                                    : `At or above the ₹${LIST_PRICE} rate card. No discount language needed.`}
+                                            <p className="text-[11px] text-slate-500 mt-2">
+                                                {hasLiveBalance
+                                                    ? 'Live from IDSPay, but it lags ~1h. Type the real figure to override.'
+                                                    : 'IDSPay balance unavailable — type it in.'}
                                             </p>
                                         </div>
 
-                                        <div className="flex items-baseline justify-between pt-3 border-t border-white/10">
-                                            <span className="text-sm text-slate-400">Deal value</span>
-                                            <span className="text-3xl font-bold text-indigo-400">{inr(dealValue)}</span>
+                                        <div className="bg-slate-900/50 p-4 rounded-xl border border-white/10">
+                                            <label className="block text-xs font-semibold text-slate-300 mb-2">b · Cost per API call (₹)</label>
+                                            <input
+                                                type="number" min="0" step="0.5"
+                                                value={calcCost}
+                                                onChange={(e) => setCalcCost(Number(e.target.value))}
+                                                className="input-field text-sm"
+                                            />
+                                            <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={calcDualCall}
+                                                    onChange={(e) => setCalcDualCall(e.target.checked)}
+                                                    className="accent-indigo-500"
+                                                />
+                                                <span className="text-[11px] text-slate-400">2 endpoints per lookup</span>
+                                            </label>
+                                        </div>
+
+                                        <div className="bg-slate-900/50 p-4 rounded-xl border border-white/10">
+                                            <label className="block text-xs font-semibold text-slate-300 mb-2">c · Credits un-availed</label>
+                                            <div className="text-2xl font-bold text-white">{outstandingCredits.toLocaleString('en-IN')}</div>
+                                            <p className="text-[11px] text-slate-500 mt-2">
+                                                Live sum across all {users.length} users. Every one of these will eventually pull money out.
+                                            </p>
                                         </div>
                                     </div>
 
-                                    {/* --- Cost assumptions --- */}
+                                    {/* --- drain rate --- */}
+                                    <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                                            <span className="text-sm text-slate-400">Each credit drains</span>
+                                            <span className="text-2xl font-bold text-white">{inr(drainPerCredit)}</span>
+                                        </div>
+                                        <p className="text-xs text-slate-500 mt-2">
+                                            ₹{calcCost} × {callsPerLookup} endpoint{callsPerLookup > 1 ? 's' : ''} ÷ {calcSuccessRate}% success rate.
+                                            Failed lookups still hit the wallet but earn you nothing, so they're priced in here.
+                                        </p>
+                                    </div>
+
+                                    {/* --- the question they actually ask --- */}
                                     <div className="bg-slate-900/50 p-5 rounded-xl border border-white/10">
-                                        <h4 className="text-sm font-semibold text-slate-300 mb-4">Your cost assumptions</h4>
-                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                        <h4 className="text-sm font-semibold text-slate-300 mb-3">If I grant this many credits…</h4>
+                                        <div className="grid grid-cols-2 gap-3">
                                             <div>
-                                                <label className="block text-xs text-slate-400 mb-1">IDSPay cost / API call (₹)</label>
+                                                <label className="block text-xs text-slate-400 mb-1">Credits to grant</label>
                                                 <input
-                                                    type="number" min="0" step="0.5"
-                                                    value={calcCost}
-                                                    onChange={(e) => setCalcCost(Number(e.target.value))}
+                                                    type="number" min="0" step="25"
+                                                    value={walletGrant}
+                                                    onChange={(e) => setWalletGrant(Number(e.target.value))}
                                                     className="input-field text-sm"
                                                 />
                                             </div>
                                             <div>
-                                                <label className="block text-xs text-slate-400 mb-1">Credits they'll actually use ({calcUtilisation}%)</label>
+                                                <label className="block text-xs text-slate-400 mb-1">Lag buffer %</label>
                                                 <input
-                                                    type="range" min="30" max="100" step="5"
-                                                    value={calcUtilisation}
-                                                    onChange={(e) => setCalcUtilisation(Number(e.target.value))}
-                                                    className="w-full accent-green-500 mt-2"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs text-slate-400 mb-1">Lookup success rate ({calcSuccessRate}%)</label>
-                                                <input
-                                                    type="range" min="50" max="100" step="5"
-                                                    value={calcSuccessRate}
-                                                    onChange={(e) => setCalcSuccessRate(Number(e.target.value))}
-                                                    className="w-full accent-amber-500 mt-2"
+                                                    type="number" min="0" max="100" step="5"
+                                                    value={walletBuffer}
+                                                    onChange={(e) => setWalletBuffer(Number(e.target.value))}
+                                                    className="input-field text-sm"
                                                 />
                                             </div>
                                         </div>
-
-                                        <label className="flex items-start gap-3 mt-4 pt-4 border-t border-white/10 cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                checked={calcDualCall}
-                                                onChange={(e) => setCalcDualCall(e.target.checked)}
-                                                className="mt-1 accent-indigo-500"
-                                            />
-                                            <span className="text-xs text-slate-400">
-                                                Two IDSPay endpoints are billed per lookup (RC To Mobile + RC Advance V2 run in parallel).
-                                                Leave this on unless you make the RC Advance call conditional.
-                                            </span>
-                                        </label>
-
-                                        <p className="text-xs text-slate-500 mt-3">
-                                            True cost per delivered credit: <span className="text-white font-semibold">{inr(trueCostPerCredit)}</span>
-                                            {' '}— {callsPerLookup} call{callsPerLookup > 1 ? 's' : ''} × ₹{calcCost}, divided by a {calcSuccessRate}% success rate.
-                                            Failed lookups aren't charged to the client, so you absorb them.
-                                        </p>
                                     </div>
 
-                                    {/* --- The verdict --- */}
-                                    <div className={`p-5 rounded-xl border ${
-                                        verdict.tone === 'green' ? 'bg-green-500/10 border-green-500/40'
-                                        : verdict.tone === 'amber' ? 'bg-amber-500/10 border-amber-500/40'
-                                        : 'bg-red-500/10 border-red-500/40'}`}>
-                                        <div className="flex flex-wrap items-baseline justify-between gap-2 mb-4">
-                                            <span className={`font-semibold ${
-                                                verdict.tone === 'green' ? 'text-green-400'
-                                                : verdict.tone === 'amber' ? 'text-amber-400'
-                                                : 'text-red-400'}`}>{verdict.label}</span>
-                                            <span className="text-4xl font-bold text-white">{marginPct.toFixed(0)}%</span>
+                                    {/* --- verdict --- */}
+                                    {!walletBalanceKnown ? (
+                                        <div className="bg-amber-500/10 border border-amber-500/40 rounded-xl p-5">
+                                            <h4 className="text-amber-400 font-semibold">Enter the wallet balance</h4>
+                                            <p className="text-sm text-slate-300 mt-1">
+                                                Without <span className="font-semibold">a</span> there's nothing to compare the {inr(afterGrantLiability)} of
+                                                commitments against.
+                                            </p>
                                         </div>
-                                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
-                                            <div>
-                                                <div className="text-lg font-bold text-white">{inr(grossProfit)}</div>
-                                                <div className="text-xs text-slate-400 mt-1">Gross profit</div>
-                                            </div>
-                                            <div>
-                                                <div className="text-lg font-bold text-white">{inr(providerCost)}</div>
-                                                <div className="text-xs text-slate-400 mt-1">Provider cost</div>
-                                            </div>
-                                            <div>
-                                                <div className="text-lg font-bold text-white">{inr(breakEvenPrice)}</div>
-                                                <div className="text-xs text-slate-400 mt-1">Break-even / call</div>
-                                            </div>
-                                            <div>
-                                                <div className="text-lg font-bold text-white">{inr(realisedPerUsedCall)}</div>
-                                                <div className="text-xs text-slate-400 mt-1">Realised / used call</div>
-                                            </div>
+                                    ) : topUpNeeded > 0 ? (
+                                        <div className="bg-red-500/10 border border-red-500/40 rounded-xl p-5">
+                                            <h4 className="text-red-400 font-semibold mb-1">Top up before granting</h4>
+                                            <div className="text-3xl sm:text-4xl font-bold text-white my-2 break-words">{inr(topUpNeeded)}</div>
+                                            <p className="text-sm text-slate-300">
+                                                Granting {grantCredits.toLocaleString('en-IN')} takes commitments to {(outstandingCredits + grantCredits).toLocaleString('en-IN')} credits
+                                                = {inr(afterGrantLiability)} of provider spend. With a {walletBuffer}% lag buffer you need {inr(requiredBalance)} in the wallet
+                                                and you have {inr(walletBalance)}.
+                                            </p>
                                         </div>
-                                    </div>
-
-                                    {/* --- Breakage: the quiet profit centre --- */}
-                                    <div className="bg-white/5 border border-green-500/30 p-5 rounded-xl">
-                                        <h4 className="text-green-400 font-semibold mb-1">Unused credits — {inr(breakageProfit)} at 100% margin</h4>
-                                        <p className="text-sm text-slate-300">
-                                            At {calcUtilisation}% utilisation they burn {Math.round(usedCredits).toLocaleString('en-IN')} of {calcCredits.toLocaleString('en-IN')} credits.
-                                            The remaining {Math.round(unusedCredits).toLocaleString('en-IN')} cost you nothing to deliver, so {inr(breakageProfit)} of this deal is pure profit
-                                            — {dealValue > 0 ? Math.round((breakageProfit / dealValue) * 100) : 0}% of the contract value.
-                                        </p>
-                                        <p className="text-xs text-slate-400 mt-3">
-                                            This is why you sell bundles, not usage. Always round the pack <span className="text-white">up</span> (offer 500, not the 400 they asked for)
-                                            and keep an expiry date on it. A generous-sounding "{tier.validity} validity" still books the breakage.
-                                        </p>
-                                    </div>
-
-                                    {/* --- Add credits, never cut the rate --- */}
-                                    <div className="bg-white/5 border border-indigo-500/30 p-5 rounded-xl">
-                                        <h4 className="text-indigo-400 font-semibold mb-3">If they push back, add credits — don't cut the rate</h4>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                            <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
-                                                <div className="text-xs text-green-400 font-semibold mb-2">DO — gift {sweetenerCredits} free credits</div>
-                                                <div className="text-sm text-slate-300">Sounds like <span className="text-white font-bold">{inr(sweetenerPerceived)}</span> of value at the ₹{LIST_PRICE} rate card.</div>
-                                                <div className="text-sm text-slate-300 mt-1">Actually costs you <span className="text-white font-bold">{inr(sweetenerRealCost)}</span> — and only if they use them.</div>
+                                    ) : (
+                                        <div className="bg-green-500/10 border border-green-500/40 rounded-xl p-5">
+                                            <h4 className="text-green-400 font-semibold mb-1">Safe to grant</h4>
+                                            <div className="my-2">
+                                                <span className="text-3xl sm:text-4xl font-bold text-white break-words">{inr(walletBalance - requiredBalance)}</span>
+                                                <span className="text-lg text-slate-300 ml-2">spare</span>
                                             </div>
-                                            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
-                                                <div className="text-xs text-red-400 font-semibold mb-2">DON'T — drop the rate 10%</div>
-                                                <div className="text-sm text-slate-300">Feels like a smaller gesture to them.</div>
-                                                <div className="text-sm text-slate-300 mt-1">Costs you <span className="text-white font-bold">{inr(discountAlternativeCost)}</span> in cash, permanently — every renewal reprices off the lower number.</div>
+                                            <p className="text-sm text-slate-300">
+                                                After granting {grantCredits.toLocaleString('en-IN')} you'd owe {inr(afterGrantLiability)} of provider spend.
+                                                With the {walletBuffer}% buffer that needs {inr(requiredBalance)} — the wallet holds {inr(walletBalance)}.
+                                            </p>
+                                        </div>
+                                    )}
+
+                                    {/* --- supporting numbers --- */}
+                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                                        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                                            <div className="text-lg font-bold text-white">{inr(currentLiability)}</div>
+                                            <div className="text-xs text-slate-400 mt-1">Owed on existing credits</div>
+                                        </div>
+                                        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                                            <div className={`text-lg font-bold ${walletHeadroom < 0 ? 'text-red-400' : 'text-white'}`}>
+                                                {inr(walletHeadroom)}
+                                            </div>
+                                            <div className="text-xs text-slate-400 mt-1">Headroom today</div>
+                                        </div>
+                                        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                                            <div className="text-lg font-bold text-white">{maxSafeGrant.toLocaleString('en-IN')}</div>
+                                            <div className="text-xs text-slate-400 mt-1">Max credits grantable now</div>
+                                        </div>
+                                        <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+                                            <div className="text-lg font-bold text-white">
+                                                {runwayDays === null ? '—' : `${runwayDays.toFixed(0)}d`}
+                                            </div>
+                                            <div className="text-xs text-slate-400 mt-1">
+                                                {runwayDays === null ? 'No burn in 7d' : `Runway at ${creditsPerDay.toFixed(1)} credits/day`}
                                             </div>
                                         </div>
-                                        <p className="text-xs text-slate-400 mt-3">
-                                            The rate is a ratchet: once you quote ₹{calcPrice}, you will never get back to ₹{LIST_PRICE} with this client. Free credits reset to zero next contract.
+                                    </div>
+
+                                    <div className="bg-white/5 border border-amber-500/30 rounded-xl p-4">
+                                        <h4 className="text-amber-400 font-semibold text-sm mb-1">Why the buffer matters</h4>
+                                        <p className="text-xs text-slate-300">
+                                            IDSPay only reflects spend after about an hour, so the balance above is a best case — lookups running right now
+                                            aren't in it yet. The {walletBuffer}% buffer is what stops a client's burst from bouncing against an empty wallet
+                                            while the dashboard still shows funds. Grant credits against the buffered figure, never the raw one.
                                         </p>
-                                    </div>
-
-                                    {/* --- Terms to demand at this price --- */}
-                                    <div className="bg-white/5 border border-amber-500/30 p-5 rounded-xl">
-                                        <h4 className="text-amber-400 font-semibold mb-3">Terms to hold at ₹{calcPrice}/call</h4>
-                                        {commitmentShortfall && (
-                                            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-4">
-                                                <p className="text-sm text-red-300">
-                                                    They're committing to {calcCredits.toLocaleString('en-IN')} credits but ₹{calcPrice}/call requires at least{' '}
-                                                    <span className="font-bold text-white">{tier.credits.toLocaleString('en-IN')}</span>.
-                                                    Either raise the pack to {tier.credits.toLocaleString('en-IN')} ({inr(tier.credits * calcPrice)}) or move them up a price tier.
-                                                </p>
-                                            </div>
-                                        )}
-                                        <dl className="space-y-3 text-sm">
-                                            <div className="flex flex-wrap justify-between gap-2">
-                                                <dt className="text-slate-400">Minimum pack</dt>
-                                                <dd className="text-white font-medium">{tier.credits.toLocaleString('en-IN')} credits ({inr(tier.credits * calcPrice)})</dd>
-                                            </div>
-                                            <div className="flex flex-wrap justify-between gap-2">
-                                                <dt className="text-slate-400">Payment</dt>
-                                                <dd className="text-white font-medium">{tier.payment}</dd>
-                                            </div>
-                                            <div className="flex flex-wrap justify-between gap-2">
-                                                <dt className="text-slate-400">Credit validity</dt>
-                                                <dd className="text-white font-medium">{tier.validity}</dd>
-                                            </div>
-                                        </dl>
-                                        {calcPrice < 60 && (
-                                            <ul className="list-disc list-inside text-sm text-slate-300 space-y-1 mt-4 pt-4 border-t border-white/10">
-                                                <li>Rate limit 10 requests/minute — frame it as "fair-use protection".</li>
-                                                <li>Email support only, 48h response. No phone, no WhatsApp group.</li>
-                                                <li>No uptime SLA and no credit-back for provider downtime.</li>
-                                            </ul>
-                                        )}
-                                    </div>
-
-                                    {/* --- Free-to-give concessions --- */}
-                                    <div className="bg-white/5 border border-white/10 p-5 rounded-xl">
-                                        <h4 className="text-slate-200 font-semibold mb-1">Concessions that cost you nothing</h4>
-                                        <p className="text-xs text-slate-400 mb-3">Spend these before you touch the price. Give one at a time, and ask for something back each time.</p>
-                                        <ul className="list-disc list-inside text-sm text-slate-300 space-y-1">
-                                            <li>Longer validity ({tier.validity} → double it) — breakage still lands, it just lands later.</li>
-                                            <li>Rollover of unused credits, but only if they recharge before expiry.</li>
-                                            <li>Priority WhatsApp support line — at this volume it's a few messages a week.</li>
-                                            <li>Free onboarding call and a walkthrough of the dashboard.</li>
-                                            <li>A pilot pack of 25 credits at the tier rate, deductible from the first real order.</li>
-                                            <li>Locked pricing for 12 months — costs nothing today and blocks a renegotiation later.</li>
-                                        </ul>
                                     </div>
                                 </div>
                             ) : null}
