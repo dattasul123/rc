@@ -6,6 +6,13 @@ import { useNavigate } from 'react-router-dom';
 // the spot — a number you can say out loud is worth more than a slider.
 const LIST_PRICE = 99;
 
+// What the market charges. The premium end is safe to quote at a client — it
+// makes our rate look like a favour. The budget end is NOT: naming a cheaper
+// supplier out loud hands the client a reason to go shopping. It stays behind
+// the margin toggle, together with how to answer when they raise it themselves.
+const RIVAL_PREMIUM = { price: 120, has: 'LinkedIn + RC' };
+const RIVAL_BUDGET = { price: 30, has: 'RC only, no support after purchase' };
+
 // Fixed plans to pitch from. Titanium reproduces the largest deal closed so far
 // (400 credits / Rs.25,000) and is marked most popular because it is the easy
 // yes; Black exists so Titanium is not the top of the ladder and the client has
@@ -89,15 +96,19 @@ export default function AdminPanel() {
     // Off by default and must stay that way: this tab gets turned around to face
     // a client, and nothing about cost or margin can be on screen when it does.
     const [showInternals, setShowInternals] = useState(false);
-    const [calcCost, setCalcCost] = useState(10);      // what IDSPay bills per API call
-    const [calcDualCall, setCalcDualCall] = useState(true);  // we hit 2 endpoints per lookup
+    // One credit buys the whole result — mobile number from RC To Mobile plus
+    // owner name and address from RC Advance V2. Both API calls together are what
+    // IDSPay bills us for, so this is the all-in cost of one credit, not per call.
+    const [calcCost, setCalcCost] = useState(8.26);
     const [calcUtilisation, setCalcUtilisation] = useState(70); // % of credits they actually burn
     const [calcSuccessRate, setCalcSuccessRate] = useState(85); // % of attempts that return a mobile
 
-    // Wallet exposure planner.
-    const [walletGrant, setWalletGrant] = useState(400);   // credits about to be handed out
+    // Wallet exposure.
     const [walletOverride, setWalletOverride] = useState(''); // type the real balance if the API is stale/down
     const [walletBuffer, setWalletBuffer] = useState(20);  // % held back to cover IDSPay's reporting lag
+    // Set only after credits are actually handed to someone, so the recharge
+    // warning describes a real grant rather than a hypothetical one.
+    const [grantAlert, setGrantAlert] = useState(null); // { credits, userName }
     const [providerWallet, setProviderWallet] = useState({
         configured: false,
         available: false,
@@ -185,9 +196,15 @@ export default function AdminPanel() {
 
             if (ok) {
                 setMessage({ type: 'success', text: data.message });
+                const target = users.find((u) => String(u.id) === String(selectedUserId));
+                const granted = creditAction === 'add' ? parseInt(creditAmount, 10) : 0;
+                const grantedTo = target ? target.full_name : 'user';
                 setCreditAmount(10);
                 setSelectedUserId('');
-                fetchData(); // Refresh data
+                // Refresh before raising the banner — it quotes live outstanding
+                // totals, which would be pre-grant figures for a frame otherwise.
+                await fetchData();
+                if (granted > 0) setGrantAlert({ credits: granted, userName: grantedTo });
             } else {
                 setMessage({ type: 'error', text: data.error || 'Failed to update credits' });
             }
@@ -219,7 +236,8 @@ export default function AdminPanel() {
             const { ok, data } = await submitAdjust({ userId: u.id, amount, action });
             if (ok) {
                 setMessage({ type: 'success', text: data.message });
-                fetchData();
+                await fetchData();
+                if (action === 'add') setGrantAlert({ credits: amount, userName: u.full_name });
             } else {
                 setMessage({ type: 'error', text: data.error || 'Failed to update credits' });
             }
@@ -337,9 +355,12 @@ export default function AdminPanel() {
     // mobile number comes back. Failed attempts cost us money and earn nothing.
     const inr = (n) => `\u20b9${Math.round(n).toLocaleString('en-IN')}`;
 
-    const callsPerLookup = calcDualCall ? 2 : 1;
+    // The only markup on the sticker cost is failed attempts: a lookup that comes
+    // back without a mobile is never charged to the client (rc-lookup.js only
+    // deducts after success), but IDSPay was still queried. Set the success rate
+    // to 100 if IDSPay doesn't bill those.
     const attemptsPerCredit = calcSuccessRate > 0 ? 100 / calcSuccessRate : 0;
-    const trueCostPerCredit = calcCost * callsPerLookup * attemptsPerCredit;
+    const trueCostPerCredit = calcCost * attemptsPerCredit;
 
     // Everything a plan is worth, precomputed once so the cards stay dumb.
     const planRows = PLANS.map((plan) => {
@@ -387,18 +408,33 @@ export default function AdminPanel() {
 
     // c -- credits sold but not yet availed, straight off the user directory.
     const outstandingCredits = users.reduce((sum, u) => sum + (Number(u.credits) || 0), 0);
-    const grantCredits = Number(walletGrant) || 0;
     const bufferMultiplier = 1 + (Number(walletBuffer) || 0) / 100;
 
+    // Everything below describes credits that genuinely exist, not a forecast:
+    // outstandingCredits is the live sum from the user directory, so after a
+    // grant lands and the directory refetches, these already include it.
     const currentLiability = outstandingCredits * drainPerCredit;
-    const afterGrantLiability = (outstandingCredits + grantCredits) * drainPerCredit;
-    const requiredBalance = afterGrantLiability * bufferMultiplier;
+    const requiredBalance = currentLiability * bufferMultiplier;
     const topUpNeeded = Math.max(0, requiredBalance - walletBalance);
     const walletHeadroom = walletBalance - currentLiability;
-    // How many more credits could be granted before the wallet stops covering it.
-    const maxSafeGrant = drainPerCredit > 0
-        ? Math.max(0, Math.floor(walletBalance / bufferMultiplier / drainPerCredit) - outstandingCredits)
+
+    // The same exposure read back in credits: how many of the credits already
+    // handed out can the wallet actually serve before it runs dry?
+    const creditsCovered = drainPerCredit > 0
+        ? Math.floor(walletBalance / bufferMultiplier / drainPerCredit)
         : 0;
+    const creditsHonourable = Math.min(creditsCovered, outstandingCredits);
+    const creditsUncovered = Math.max(0, outstandingCredits - creditsCovered);
+    const coveragePct = outstandingCredits > 0
+        ? Math.min(100, (creditsHonourable / outstandingCredits) * 100)
+        : 100;
+    const fullyCovered = creditsUncovered === 0;
+
+    // Funding every outstanding credit assumes all of them get burnt. Historically
+    // they don't, so this is the figure to actually plan cash around.
+    const expectedBurnCredits = outstandingCredits * (calcUtilisation / 100);
+    const expectedRequired = expectedBurnCredits * drainPerCredit * bufferMultiplier;
+    const expectedTopUp = Math.max(0, expectedRequired - walletBalance);
 
     // SQLite stores CURRENT_TIMESTAMP as UTC without a zone marker; parsing it
     // raw makes the browser read it as local time and skews the window by +5:30.
@@ -431,6 +467,64 @@ export default function AdminPanel() {
                     </button>
                 </div>
             </header>
+
+            {/* Raised only after credits actually change hands. By the time this
+                renders the user directory has refetched, so outstandingCredits
+                and the figures below already include the grant. */}
+            {grantAlert && (
+                <div className={`rounded-xl border p-4 sm:p-5 ${
+                    !walletBalanceKnown || topUpNeeded > 0
+                        ? 'bg-red-500/10 border-red-500/50'
+                        : 'bg-green-500/10 border-green-500/50'
+                }`}>
+                    <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                            <h3 className={`font-semibold ${
+                                !walletBalanceKnown || topUpNeeded > 0 ? 'text-red-400' : 'text-green-400'
+                            }`}>
+                                {!walletBalanceKnown
+                                    ? 'Check the IDSPay wallet'
+                                    : topUpNeeded > 0
+                                        ? 'Recharge IDSPay now'
+                                        : 'Wallet still covers it'}
+                            </h3>
+                            <p className="text-sm text-slate-300 mt-1">
+                                Gave <span className="font-semibold text-white">{grantAlert.credits.toLocaleString('en-IN')} credits</span> to {grantAlert.userName}
+                                {' '}— that alone commits <span className="font-semibold text-white">{inr(grantAlert.credits * drainPerCredit)}</span> of IDSPay spend.
+                            </p>
+
+                            {!walletBalanceKnown ? (
+                                <p className="text-sm text-slate-300 mt-2">
+                                    {outstandingCredits.toLocaleString('en-IN')} credits are now outstanding across all users, worth {inr(currentLiability)} of
+                                    provider spend. The wallet balance isn't available, so open the Wallet tab and enter it to see what's needed.
+                                </p>
+                            ) : topUpNeeded > 0 ? (
+                                <>
+                                    <div className="text-2xl sm:text-3xl font-bold text-white my-2 break-words">
+                                        Recharge {inr(topUpNeeded)}
+                                    </div>
+                                    <p className="text-sm text-slate-300">
+                                        {outstandingCredits.toLocaleString('en-IN')} credits outstanding = {inr(currentLiability)} of spend.
+                                        With the {walletBuffer}% lag buffer the wallet needs {inr(requiredBalance)} and holds {inr(walletBalance)}.
+                                    </p>
+                                </>
+                            ) : (
+                                <p className="text-sm text-slate-300 mt-2">
+                                    {outstandingCredits.toLocaleString('en-IN')} credits outstanding = {inr(currentLiability)} of spend.
+                                    The wallet holds {inr(walletBalance)}, leaving {inr(walletBalance - requiredBalance)} spare after the {walletBuffer}% buffer.
+                                </p>
+                            )}
+                        </div>
+                        <button
+                            onClick={() => setGrantAlert(null)}
+                            className="text-slate-400 hover:text-white text-xl leading-none shrink-0"
+                            aria-label="Dismiss"
+                        >
+                            ×
+                        </button>
+                    </div>
+                </div>
+            )}
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
                 <div className="lg:col-span-1 space-y-4 sm:space-y-6">
@@ -833,6 +927,17 @@ export default function AdminPanel() {
                                         Pilot available: 25 lookups at ₹{LIST_PRICE}/call, deductible from the first plan they buy.
                                     </p>
 
+                                    {/* Client-safe anchor: the premium rival only. */}
+                                    <div className="bg-white/5 border border-white/10 rounded-xl p-4 text-center">
+                                        <p className="text-sm text-slate-300">
+                                            Comparable RC + owner data sells at <span className="font-bold text-white">₹{RIVAL_PREMIUM.price}/call</span> elsewhere.
+                                        </p>
+                                        <p className="text-xs text-slate-400 mt-1">
+                                            Titanium delivers the same mobile, owner name and address for ₹62.50 —
+                                            {' '}{Math.round((1 - 62.5 / RIVAL_PREMIUM.price) * 100)}% below the market rate.
+                                        </p>
+                                    </div>
+
                                     {/* ---------- Everything below is for you only ---------- */}
                                     {showInternals && (
                                         <div className="space-y-4 pt-2">
@@ -844,11 +949,11 @@ export default function AdminPanel() {
 
                                             <div className="bg-slate-900/50 p-5 rounded-xl border border-white/10">
                                                 <h4 className="text-sm font-semibold text-slate-300 mb-4">Cost assumptions</h4>
-                                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                                                     <div>
-                                                        <label className="block text-xs text-slate-400 mb-1">IDSPay ₹/call</label>
+                                                        <label className="block text-xs text-slate-400 mb-1">₹ per credit (all-in)</label>
                                                         <input
-                                                            type="number" min="0" step="0.5"
+                                                            type="number" min="0" step="0.01"
                                                             value={calcCost}
                                                             onChange={(e) => setCalcCost(Number(e.target.value))}
                                                             className="input-field text-sm"
@@ -872,22 +977,95 @@ export default function AdminPanel() {
                                                             className="input-field text-sm"
                                                         />
                                                     </div>
-                                                    <div className="flex items-end">
-                                                        <label className="flex items-center gap-2 cursor-pointer pb-2">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={calcDualCall}
-                                                                onChange={(e) => setCalcDualCall(e.target.checked)}
-                                                                className="accent-indigo-500"
-                                                            />
-                                                            <span className="text-xs text-slate-400">2 endpoints billed</span>
-                                                        </label>
-                                                    </div>
                                                 </div>
                                                 <p className="text-xs text-slate-500 mt-3">
+                                                    ₹{calcCost} covers both API calls behind one credit — mobile number, owner name and address.
                                                     True cost per delivered credit: <span className="text-white font-semibold">{inr(trueCostPerCredit)}</span>
-                                                    {' '}— {callsPerLookup} call{callsPerLookup > 1 ? 's' : ''} × ₹{calcCost}, ÷ {calcSuccessRate}% success.
-                                                    Failed lookups aren't charged to the client, so you absorb them.
+                                                    {' '}(₹{calcCost} ÷ {calcSuccessRate}% success), because a failed lookup isn't charged to the client but was still queried.
+                                                </p>
+                                            </div>
+
+                                            <div className="bg-white/5 border border-white/10 p-5 rounded-xl">
+                                                <h4 className="text-slate-200 font-semibold mb-1">Where you sit in the market</h4>
+                                                <p className="text-xs text-slate-400 mb-4">
+                                                    Break-even is {inr(trueCostPerCredit)}/credit, so every price on this line is profitable.
+                                                    Position is a choice here, not an economic constraint.
+                                                </p>
+
+                                                <div className="overflow-x-auto">
+                                                    <table className="w-full text-sm min-w-[460px]">
+                                                        <thead className="text-slate-400 text-xs">
+                                                            <tr className="border-b border-white/10">
+                                                                <th className="text-left pb-2">Rate</th>
+                                                                <th className="text-left pb-2">Who</th>
+                                                                <th className="text-right pb-2">Your margin there</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <tr className="border-b border-white/5">
+                                                                <td className="py-2 font-bold text-white">₹{RIVAL_PREMIUM.price}</td>
+                                                                <td className="py-2 text-slate-300">Premium rival — {RIVAL_PREMIUM.has}</td>
+                                                                <td className="py-2 text-right text-green-400">
+                                                                    {Math.round((1 - trueCostPerCredit / RIVAL_PREMIUM.price) * 100)}%
+                                                                </td>
+                                                            </tr>
+                                                            <tr className="border-b border-white/5 bg-indigo-500/10">
+                                                                <td className="py-2 font-bold text-indigo-300">₹55–89</td>
+                                                                <td className="py-2 text-indigo-200">You — RC + owner name & address</td>
+                                                                <td className="py-2 text-right text-green-400">88–92%</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td className="py-2 font-bold text-white">₹{RIVAL_BUDGET.price}</td>
+                                                                <td className="py-2 text-slate-300">Budget rival — {RIVAL_BUDGET.has}</td>
+                                                                <td className="py-2 text-right text-amber-400">
+                                                                    {Math.round((1 - trueCostPerCredit / RIVAL_BUDGET.price) * 100)}%
+                                                                </td>
+                                                            </tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+
+                                                <p className="text-xs text-slate-400 mt-3">
+                                                    You could match ₹{RIVAL_BUDGET.price} and still keep
+                                                    {' '}{Math.round((1 - trueCostPerCredit / RIVAL_BUDGET.price) * 100)}% margin — which is exactly why you must not.
+                                                    Price is the budget rival's only weapon; matching it hands them the one fight they're equipped for
+                                                    and throws away {inr(62.5 - RIVAL_BUDGET.price)} a credit for nothing.
+                                                </p>
+                                            </div>
+
+                                            <div className="bg-white/5 border border-amber-500/30 p-5 rounded-xl">
+                                                <h4 className="text-amber-400 font-semibold mb-3">When they say "X sells at ₹{RIVAL_BUDGET.price}"</h4>
+                                                <ul className="text-sm text-slate-300 space-y-2">
+                                                    <li>
+                                                        <span className="text-white font-medium">Never match it, and never rubbish them.</span>{' '}
+                                                        Ask instead: "who picks up when a lookup fails on a Friday evening?" You're selling the answer to that.
+                                                    </li>
+                                                    <li>
+                                                        <span className="text-white font-medium">Make the risk concrete.</span>{' '}
+                                                        Prepaid credits with no support is money handed over against a promise. Offer the 25-credit pilot —
+                                                        it costs you {inr(25 * trueCostPerCredit)} and it's the thing they can't get from a vanishing supplier.
+                                                    </li>
+                                                    <li>
+                                                        <span className="text-white font-medium">Move the comparison off unit price.</span>{' '}
+                                                        A failed lookup they can't chase costs more than the {inr(62.5 - RIVAL_BUDGET.price)} they'd save on it.
+                                                    </li>
+                                                    <li>
+                                                        <span className="text-white font-medium">If they still only want cheap, let them go.</span>{' '}
+                                                        They'll be back after the first bad batch, and you keep your rate card intact for everyone else.
+                                                    </li>
+                                                </ul>
+                                            </div>
+
+                                            <div className="bg-white/5 border border-indigo-500/30 p-5 rounded-xl">
+                                                <h4 className="text-indigo-400 font-semibold mb-2">The gap to ₹{RIVAL_PREMIUM.price} is product, not price</h4>
+                                                <p className="text-sm text-slate-300">
+                                                    They charge {Math.round((RIVAL_PREMIUM.price / 62.5 - 1) * 100)}% more than Titanium because they bundle {RIVAL_PREMIUM.has}.
+                                                    That's the only thing separating you — on RC data itself you deliver the same mobile, owner name and address.
+                                                </p>
+                                                <p className="text-sm text-slate-300 mt-2">
+                                                    Adding one enrichment source would let you sell at ₹{RIVAL_PREMIUM.price} against the same buyers.
+                                                    At {inr(trueCostPerCredit)} of cost, even an expensive second data source stays comfortably profitable —
+                                                    worth pricing out before you spend another negotiation defending ₹62.50.
                                                 </p>
                                             </div>
 
@@ -979,22 +1157,16 @@ export default function AdminPanel() {
                                         </div>
 
                                         <div className="bg-slate-900/50 p-4 rounded-xl border border-white/10">
-                                            <label className="block text-xs font-semibold text-slate-300 mb-2">b · Cost per API call (₹)</label>
+                                            <label className="block text-xs font-semibold text-slate-300 mb-2">b · Cost per credit (₹)</label>
                                             <input
-                                                type="number" min="0" step="0.5"
+                                                type="number" min="0" step="0.01"
                                                 value={calcCost}
                                                 onChange={(e) => setCalcCost(Number(e.target.value))}
                                                 className="input-field text-sm"
                                             />
-                                            <label className="flex items-center gap-2 mt-2 cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={calcDualCall}
-                                                    onChange={(e) => setCalcDualCall(e.target.checked)}
-                                                    className="accent-indigo-500"
-                                                />
-                                                <span className="text-[11px] text-slate-400">2 endpoints per lookup</span>
-                                            </label>
+                                            <p className="text-[11px] text-slate-500 mt-2">
+                                                All-in for both API calls behind one credit — mobile, owner name and address.
+                                            </p>
                                         </div>
 
                                         <div className="bg-slate-900/50 p-4 rounded-xl border border-white/10">
@@ -1013,65 +1185,155 @@ export default function AdminPanel() {
                                             <span className="text-2xl font-bold text-white">{inr(drainPerCredit)}</span>
                                         </div>
                                         <p className="text-xs text-slate-500 mt-2">
-                                            ₹{calcCost} × {callsPerLookup} endpoint{callsPerLookup > 1 ? 's' : ''} ÷ {calcSuccessRate}% success rate.
-                                            Failed lookups still hit the wallet but earn you nothing, so they're priced in here.
+                                            ₹{calcCost} ÷ {calcSuccessRate}% success rate. A lookup that returns no mobile is never
+                                            charged to the client but still drew on the wallet, so those attempts are priced in here.
+                                            Set success to 100% if IDSPay doesn't bill failed queries.
                                         </p>
                                     </div>
 
-                                    {/* --- the question they actually ask --- */}
+                                    {/* --- buffer --- */}
                                     <div className="bg-slate-900/50 p-5 rounded-xl border border-white/10">
-                                        <h4 className="text-sm font-semibold text-slate-300 mb-3">If I grant this many credits…</h4>
-                                        <div className="grid grid-cols-2 gap-3">
-                                            <div>
-                                                <label className="block text-xs text-slate-400 mb-1">Credits to grant</label>
-                                                <input
-                                                    type="number" min="0" step="25"
-                                                    value={walletGrant}
-                                                    onChange={(e) => setWalletGrant(Number(e.target.value))}
-                                                    className="input-field text-sm"
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs text-slate-400 mb-1">Lag buffer %</label>
-                                                <input
-                                                    type="number" min="0" max="100" step="5"
-                                                    value={walletBuffer}
-                                                    onChange={(e) => setWalletBuffer(Number(e.target.value))}
-                                                    className="input-field text-sm"
-                                                />
-                                            </div>
-                                        </div>
+                                        <label className="block text-xs text-slate-400 mb-1">Lag buffer %</label>
+                                        <input
+                                            type="number" min="0" max="100" step="5"
+                                            value={walletBuffer}
+                                            onChange={(e) => setWalletBuffer(Number(e.target.value))}
+                                            className="input-field text-sm max-w-[8rem]"
+                                        />
+                                        <p className="text-[11px] text-slate-500 mt-2">
+                                            Held back because IDSPay only reflects spend after about an hour.
+                                        </p>
                                     </div>
 
-                                    {/* --- verdict --- */}
+                                    {/* --- where the wallet stands against credits that already exist --- */}
                                     {!walletBalanceKnown ? (
                                         <div className="bg-amber-500/10 border border-amber-500/40 rounded-xl p-5">
                                             <h4 className="text-amber-400 font-semibold">Enter the wallet balance</h4>
                                             <p className="text-sm text-slate-300 mt-1">
-                                                Without <span className="font-semibold">a</span> there's nothing to compare the {inr(afterGrantLiability)} of
-                                                commitments against.
+                                                Without <span className="font-semibold">a</span> there's nothing to compare the {inr(currentLiability)} of
+                                                outstanding commitments against.
                                             </p>
                                         </div>
                                     ) : topUpNeeded > 0 ? (
                                         <div className="bg-red-500/10 border border-red-500/40 rounded-xl p-5">
-                                            <h4 className="text-red-400 font-semibold mb-1">Top up before granting</h4>
+                                            <h4 className="text-red-400 font-semibold mb-1">Recharge IDSPay</h4>
                                             <div className="text-3xl sm:text-4xl font-bold text-white my-2 break-words">{inr(topUpNeeded)}</div>
                                             <p className="text-sm text-slate-300">
-                                                Granting {grantCredits.toLocaleString('en-IN')} takes commitments to {(outstandingCredits + grantCredits).toLocaleString('en-IN')} credits
-                                                = {inr(afterGrantLiability)} of provider spend. With a {walletBuffer}% lag buffer you need {inr(requiredBalance)} in the wallet
-                                                and you have {inr(walletBalance)}.
+                                                {outstandingCredits.toLocaleString('en-IN')} credits are already in clients' hands
+                                                = {inr(currentLiability)} of provider spend. With a {walletBuffer}% lag buffer the wallet
+                                                needs {inr(requiredBalance)} and holds {inr(walletBalance)}.
                                             </p>
                                         </div>
                                     ) : (
                                         <div className="bg-green-500/10 border border-green-500/40 rounded-xl p-5">
-                                            <h4 className="text-green-400 font-semibold mb-1">Safe to grant</h4>
+                                            <h4 className="text-green-400 font-semibold mb-1">Wallet covers what's outstanding</h4>
                                             <div className="my-2">
                                                 <span className="text-3xl sm:text-4xl font-bold text-white break-words">{inr(walletBalance - requiredBalance)}</span>
                                                 <span className="text-lg text-slate-300 ml-2">spare</span>
                                             </div>
                                             <p className="text-sm text-slate-300">
-                                                After granting {grantCredits.toLocaleString('en-IN')} you'd owe {inr(afterGrantLiability)} of provider spend.
+                                                {outstandingCredits.toLocaleString('en-IN')} outstanding credits owe {inr(currentLiability)} of provider spend.
                                                 With the {walletBuffer}% buffer that needs {inr(requiredBalance)} — the wallet holds {inr(walletBalance)}.
+                                            </p>
+                                        </div>
+                                    )}
+
+                                    {/* --- can the wallet honour what's already been given out? --- */}
+                                    <div className={`rounded-xl border p-5 ${
+                                        !walletBalanceKnown ? 'bg-white/5 border-white/10'
+                                            : fullyCovered ? 'bg-green-500/10 border-green-500/40'
+                                            : 'bg-red-500/10 border-red-500/40'
+                                    }`}>
+                                        <h4 className={`font-semibold mb-1 ${
+                                            !walletBalanceKnown ? 'text-slate-300'
+                                                : fullyCovered ? 'text-green-400' : 'text-red-400'
+                                        }`}>
+                                            {!walletBalanceKnown
+                                                ? 'Can we honour outstanding credits?'
+                                                : fullyCovered
+                                                    ? 'Yes — no recharge needed'
+                                                    : 'No — these credits will fail'}
+                                        </h4>
+
+                                        {walletBalanceKnown && (
+                                            <>
+                                                <div className="text-3xl sm:text-4xl font-bold text-white my-2 break-words">
+                                                    {creditsHonourable.toLocaleString('en-IN')}
+                                                    <span className="text-lg text-slate-400 font-medium">
+                                                        {' '}of {outstandingCredits.toLocaleString('en-IN')} credits
+                                                    </span>
+                                                </div>
+
+                                                {/* Covered vs uncovered, at a glance. */}
+                                                <div className="h-2 w-full bg-slate-700/60 rounded-full overflow-hidden my-3">
+                                                    <div
+                                                        className={fullyCovered ? 'h-full bg-green-500' : 'h-full bg-red-500'}
+                                                        style={{ width: `${coveragePct}%` }}
+                                                    />
+                                                </div>
+
+                                                <p className="text-sm text-slate-300">
+                                                    {fullyCovered ? (
+                                                        <>
+                                                            {inr(walletBalance)} covers all {outstandingCredits.toLocaleString('en-IN')} outstanding credits
+                                                            at {inr(drainPerCredit)} each, with the {walletBuffer}% buffer held back.
+                                                            You can leave the wallet alone.
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            {inr(walletBalance)} runs dry after {creditsHonourable.toLocaleString('en-IN')} lookups.
+                                                            The remaining <span className="font-semibold text-white">{creditsUncovered.toLocaleString('en-IN')} credits</span> are
+                                                            sold but unfunded — those clients get failures unless you recharge {inr(topUpNeeded)}.
+                                                        </>
+                                                    )}
+                                                </p>
+                                            </>
+                                        )}
+                                        {!walletBalanceKnown && (
+                                            <p className="text-sm text-slate-300 mt-1">
+                                                Enter the wallet balance above to see how many of the
+                                                {' '}{outstandingCredits.toLocaleString('en-IN')} outstanding credits it can serve.
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    {/* --- worst case vs what actually happens --- */}
+                                    {walletBalanceKnown && (
+                                        <div className="bg-slate-900/50 border border-white/10 rounded-xl p-5">
+                                            <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+                                                <h4 className="text-sm font-semibold text-slate-300">How much to actually keep in the wallet</h4>
+                                                <label className="text-xs text-slate-400 flex items-center gap-2">
+                                                    Utilisation
+                                                    <input
+                                                        type="number" min="1" max="100" step="5"
+                                                        value={calcUtilisation}
+                                                        onChange={(e) => setCalcUtilisation(Number(e.target.value))}
+                                                        className="input-field text-sm w-20 py-1"
+                                                    />
+                                                    %
+                                                </label>
+                                            </div>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+                                                    <div className="text-xs text-slate-400 mb-1">Worst case — everyone burns everything</div>
+                                                    <div className="text-xl font-bold text-white">{inr(requiredBalance)}</div>
+                                                    <div className={`text-sm mt-1 ${topUpNeeded > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                                        {topUpNeeded > 0 ? `Recharge ${inr(topUpNeeded)}` : 'Already covered'}
+                                                    </div>
+                                                </div>
+                                                <div className="bg-white/5 border border-indigo-500/30 rounded-lg p-4">
+                                                    <div className="text-xs text-slate-400 mb-1">Realistic — at {calcUtilisation}% utilisation</div>
+                                                    <div className="text-xl font-bold text-white">{inr(expectedRequired)}</div>
+                                                    <div className={`text-sm mt-1 ${expectedTopUp > 0 ? 'text-amber-400' : 'text-green-400'}`}>
+                                                        {expectedTopUp > 0 ? `Recharge ${inr(expectedTopUp)}` : 'Already covered'}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <p className="text-xs text-slate-400 mt-3">
+                                                Clients historically burn about {calcUtilisation}% of what they buy, so only
+                                                {' '}{Math.round(expectedBurnCredits).toLocaleString('en-IN')} of the {outstandingCredits.toLocaleString('en-IN')} outstanding
+                                                credits are likely to be claimed. Funding the worst case ties up {inr(Math.max(0, requiredBalance - expectedRequired))} you
+                                                probably never need — but it is the only figure that guarantees nobody sees a failure.
                                             </p>
                                         </div>
                                     )}
@@ -1089,8 +1351,8 @@ export default function AdminPanel() {
                                             <div className="text-xs text-slate-400 mt-1">Headroom today</div>
                                         </div>
                                         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-                                            <div className="text-lg font-bold text-white">{maxSafeGrant.toLocaleString('en-IN')}</div>
-                                            <div className="text-xs text-slate-400 mt-1">Max credits grantable now</div>
+                                            <div className="text-lg font-bold text-white">{outstandingCredits.toLocaleString('en-IN')}</div>
+                                            <div className="text-xs text-slate-400 mt-1">Credits un-availed</div>
                                         </div>
                                         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
                                             <div className="text-lg font-bold text-white">
