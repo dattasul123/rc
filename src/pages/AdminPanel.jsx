@@ -531,7 +531,7 @@ export default function AdminPanel() {
                                         ))}
                                     </tbody>
                                 </table>
-                            ) : (
+                            ) : activeTab === 'transactions' ? (
                                 <table className="w-full min-w-[520px] text-left text-sm">
                                     <thead className="text-slate-400 bg-slate-900/50 backdrop-blur-md border-b border-white/10">
                                         <tr>
@@ -633,7 +633,7 @@ export default function AdminPanel() {
                                         )}
                                     </div>
                                 </div>
-                            )}
+                            ) : null}
                         </div>
                     </div>
                 </div>

@@ -62,6 +62,35 @@ export async function saveLookupHistory(db, { userId, rcNumber, mobileNumber, ow
     return success;
 }
 
+// --- Provider observability ------------------------------------------------------
+
+// Record an anomalous provider response (nested/undocumented error codes, masked or
+// missing mobile, missing name/address/pincode) with its raw body. Not on the
+// critical path: callers must never fail a lookup because this write failed.
+export async function saveProviderAnomaly(db, {
+    userId = null,
+    rcNumber,
+    endpoint,
+    httpStatus = null,
+    providerStatusCode = null,
+    providerStatusType = null,
+    providerErrorCode = null,
+    providerErrorMessage = null,
+    missingFields = null,
+    rawResponse = null
+}) {
+    const { success } = await db.prepare(
+        `INSERT INTO provider_anomalies
+            (user_id, rc_number, endpoint, http_status, provider_status_code, provider_status_type,
+             provider_error_code, provider_error_message, missing_fields, raw_response)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+        userId, rcNumber, endpoint, httpStatus, providerStatusCode, providerStatusType,
+        providerErrorCode, providerErrorMessage, missingFields, rawResponse
+    ).run();
+    return success;
+}
+
 // --- Global settings -----------------------------------------------------------
 
 export async function getSetting(db, key, defaultValue = null) {
