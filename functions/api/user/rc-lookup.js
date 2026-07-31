@@ -2,6 +2,7 @@ import {
     getUserById,
     deductCredit,
     saveLookupHistory,
+    saveProviderAnomaly,
     getPremiumThreshold
 } from '../../utils/db.js';
 
@@ -17,6 +18,7 @@ function jsonResponse(body, status = 200) {
 
 // POST JSON to an IDSPay endpoint. Never throws: on a network or parse failure it
 // returns ok:false so a failing enrichment call can't abort the whole lookup.
+// The raw body is kept so anomalous responses can be stored for analysis.
 async function callIdsPay(url, body) {
     try {
         const resp = await fetch(url, {
@@ -31,10 +33,41 @@ async function callIdsPay(url, body) {
         } catch {
             json = {};
         }
-        return { ok: resp.ok, status: resp.status, json };
+        return { ok: resp.ok, status: resp.status, json, text };
     } catch {
-        return { ok: false, status: 0, json: {} };
+        return { ok: false, status: 0, json: {}, text: '' };
     }
+}
+
+// Anomalies are rare, so a few KB of raw body per row is enough for analysis
+// without bloating D1.
+const RAW_RESPONSE_LIMIT = 4096;
+
+// Describe an anomalous provider response: a transport failure, a non-success
+// envelope, a nested error object (undocumented — IDSPay can put data.errors
+// inside a 200 "success" envelope), or expected fields missing from an otherwise
+// successful payload. Returns null when the response looks healthy.
+function buildAnomaly(call, missingFields) {
+    const nested = call?.json?.data?.errors ?? call?.json?.errors;
+    const nestedError = nested && typeof nested === 'object'
+        && (nested.code !== undefined || nested.message !== undefined)
+        ? nested
+        : null;
+    const statusType = String(call?.json?.status?.type || '').trim().toLowerCase();
+    const failed = !call?.ok || statusType !== 'success';
+
+    if (!failed && !nestedError && missingFields.length === 0) return null;
+
+    return {
+        httpStatus: call?.status ?? 0,
+        providerStatusCode: call?.json?.status?.code ?? null,
+        providerStatusType: call?.json?.status?.type ?? null,
+        providerErrorCode: nestedError && nestedError.code !== undefined ? String(nestedError.code) : null,
+        providerErrorMessage: (nestedError && nestedError.message)
+            || (failed ? (call?.json?.message || call?.json?.status?.message || null) : null),
+        missingFields: missingFields.length > 0 ? missingFields.join(',') : null,
+        rawResponse: (call?.text || '').slice(0, RAW_RESPONSE_LIMIT) || null
+    };
 }
 
 function normalizeFieldName(key) {
@@ -178,6 +211,46 @@ export async function onRequestPost(context) {
         const normalizedMobile = providerMobileDigits.length === 12 && providerMobileDigits.startsWith('91')
             ? providerMobileDigits.slice(2)
             : providerMobileDigits;
+        const mobileMasked = Boolean(providerMobile)
+            && (/[xX*]/.test(providerMobile) || !/^\d{10}$/.test(normalizedMobile));
+
+        // --- Owner name + address (best-effort, from RC Advance V2) ---
+        const advanceData = advanceCall?.json?.data;
+        const advanceOk = Boolean(advanceCall?.ok)
+            && String(advanceCall?.json?.status?.type || '').trim().toLowerCase() === 'success';
+        const providerName = advanceOk ? readProviderName(advanceData) : '';
+        const providerAddress = advanceOk ? readProviderAddress(advanceData) : '';
+        const providerPincode = advanceOk ? readProviderPincode(advanceData, providerAddress) : '';
+
+        // --- Observability: store anomalous provider behavior before any early
+        // return, so failed lookups are captured too. waitUntil keeps it off the
+        // response path; a failed write only logs.
+        const mobileMissing = [];
+        if (!providerMobile) mobileMissing.push('mobileNo');
+        else if (mobileMasked) mobileMissing.push('mobileNo(masked)');
+
+        const advanceMissing = [];
+        if (advanceOk) {
+            if (!providerName) advanceMissing.push('owner_name');
+            if (!providerAddress) advanceMissing.push('present_address');
+            // An address like ", 560046" (digits/punctuation only, no locality
+            // text) is effectively missing — seen live, not in the docs.
+            else if (!providerAddress.replace(/[\d\s,.-]/g, '')) advanceMissing.push('present_address(pincode_only)');
+            if (!providerPincode) advanceMissing.push('pincode');
+        }
+
+        for (const [endpoint, call, missing] of [
+            ['srv1/rc-to-mobile', mobileCall, mobileMissing],
+            ['srv2/validation/rc', advanceCall, advanceMissing]
+        ]) {
+            const anomaly = buildAnomaly(call, missing);
+            if (!anomaly) continue;
+            context.waitUntil(
+                saveProviderAnomaly(env.DB, { userId, rcNumber: vehicleNumber, endpoint, ...anomaly })
+                    .catch((e) => console.error(`Failed to record provider anomaly for ${endpoint}: ${e.message}`))
+            );
+        }
+        // --------------------------------------------------------------
 
         if (!mobileCall?.ok || mobileStatus !== 'success') {
             const message = mobileCall?.json?.message || mobileCall?.json?.status?.message || 'RC to Mobile lookup failed';
@@ -191,21 +264,13 @@ export async function onRequestPost(context) {
             }, 502);
         }
 
-        if (/[xX*]/.test(providerMobile) || !/^\d{10}$/.test(normalizedMobile)) {
+        if (mobileMasked) {
             console.error('IDSPay returned a non-production or masked mobile number response');
             return jsonResponse({
                 success: false,
                 message: 'Provider returned masked/sample data. Confirm the production API credentials and endpoint are active.'
             }, 502);
         }
-
-        // --- Owner name + address (best-effort, from RC Advance V2) ---
-        const advanceData = advanceCall?.json?.data;
-        const advanceOk = Boolean(advanceCall?.ok)
-            && String(advanceCall?.json?.status?.type || '').trim().toLowerCase() === 'success';
-        const providerName = advanceOk ? readProviderName(advanceData) : '';
-        const providerAddress = advanceOk ? readProviderAddress(advanceData) : '';
-        const providerPincode = advanceOk ? readProviderPincode(advanceData, providerAddress) : '';
 
         const result = {
             mobileNumber: normalizedMobile,
