@@ -13,6 +13,11 @@ dist-ssr
 *.local
 .wrangler
 
+# Unused source media (63MB). Nothing in the app references it, and Pages has to
+# clone the repo before it can start a build. Assets the app actually serves
+# belong in public/.
+photo
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
