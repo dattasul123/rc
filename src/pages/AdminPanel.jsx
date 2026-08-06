@@ -92,7 +92,7 @@ export default function AdminPanel() {
     const [creditAction, setCreditAction] = useState('add'); // 'add' | 'deduct'
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState({ type: '', text: '' });
-    const [activeTab, setActiveTab] = useState('users'); // 'users' | 'transactions' | 'calculator'
+    const [activeTab, setActiveTab] = useState('users'); // 'users' | 'lookups' | 'transactions' | 'calculator' | 'wallet'
     // Off by default and must stay that way: this tab gets turned around to face
     // a client, and nothing about cost or margin can be on screen when it does.
     const [showInternals, setShowInternals] = useState(false);
@@ -120,6 +120,16 @@ export default function AdminPanel() {
     const [isCreating, setIsCreating] = useState(false);
     const [createMessage, setCreateMessage] = useState({ type: '', text: '' });
 
+    // Every user's lookups, clubbed under them by /api/admin/lookups. Only one
+    // user is expanded at a time — these lists run to hundreds of rows.
+    const [lookupGroups, setLookupGroups] = useState([]);
+    const [expandedUserId, setExpandedUserId] = useState(null);
+    const [exportingKey, setExportingKey] = useState(null);
+    const [lookupSearch, setLookupSearch] = useState('');
+    // Kept separate from `message`, which renders over in the Adjust Credits card
+    // — an export failure has to be visible in the tab the button lives in.
+    const [lookupError, setLookupError] = useState('');
+
     const [premiumThreshold, setPremiumThreshold] = useState(0);
     const [premiumInput, setPremiumInput] = useState('0');
     const [savingPremium, setSavingPremium] = useState(false);
@@ -131,15 +141,22 @@ export default function AdminPanel() {
 
     const fetchData = async () => {
         try {
-            const [usersRes, transRes, walletRes, settingsRes] = await Promise.all([
+            const [usersRes, transRes, walletRes, settingsRes, lookupsRes] = await Promise.all([
                 fetch('/api/admin/users', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
                 fetch('/api/admin/transactions', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
                 fetch('/api/admin/provider-wallet', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
-                fetch('/api/admin/settings', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
+                fetch('/api/admin/settings', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
+                fetch('/api/admin/lookups', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
             ]);
 
             if (usersRes.ok) setUsers((await usersRes.json()).users);
             if (transRes.ok) setTransactions((await transRes.json()).transactions);
+            // A deployment that predates this function answers with the SPA's
+            // index.html and a 200, so `ok` alone doesn't mean there's JSON here.
+            // Parsing that would throw and take settings and wallet down with it.
+            if (lookupsRes.ok && (lookupsRes.headers.get('Content-Type') || '').includes('application/json')) {
+                setLookupGroups((await lookupsRes.json()).users);
+            }
             if (settingsRes.ok) {
                 const s = await settingsRes.json();
                 const threshold = s.premiumThreshold ?? 0;
@@ -163,6 +180,60 @@ export default function AdminPanel() {
                 available: false,
                 message: 'Unable to fetch wallet balance'
             });
+        }
+    };
+
+    // Pass a user id for that user's lookups as "<their name>.csv", or null for
+    // everyone. We can't just point an <a> at the endpoint: the admin middleware
+    // wants an Authorization header, so the file is fetched here and handed to
+    // the browser as a blob, keeping the filename the server chose.
+    const downloadLookupsCsv = async (userId) => {
+        const key = userId === null ? 'all' : userId;
+        setExportingKey(key);
+        setLookupError('');
+        try {
+            const query = userId === null ? '' : `?userId=${userId}`;
+            const res = await fetch(`/api/admin/lookups-export${query}`, {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+            });
+
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                setLookupError(data.error || `Export failed (${res.status})`);
+                return;
+            }
+
+            // An unmatched /api/admin/* path falls through to the static assets
+            // and returns index.html with a 200. Without this check the browser
+            // would cheerfully save that HTML as someone's .csv.
+            if (!(res.headers.get('Content-Type') || '').includes('text/csv')) {
+                setLookupError('Export endpoint not found — deploy the latest functions, then try again.');
+                return;
+            }
+
+            // Prefer filename*, which carries names that aren't plain ASCII.
+            const disposition = res.headers.get('Content-Disposition') || '';
+            const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+            const plain = disposition.match(/filename="([^"]+)"/i);
+            const filename = encoded ? decodeURIComponent(encoded[1])
+                : plain ? plain[1]
+                : `${key}.csv`;
+
+            const url = URL.createObjectURL(await res.blob());
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            // Revoking in the same tick can cancel the download before the
+            // browser has read the blob.
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+        } catch (err) {
+            console.error('CSV export failed', err);
+            setLookupError('Export failed — check your connection and try again.');
+        } finally {
+            setExportingKey(null);
         }
     };
 
@@ -348,6 +419,19 @@ export default function AdminPanel() {
         logout();
         navigate('/login');
     };
+
+    // --- Lookup data ----------------------------------------------------------
+    const totalLookups = lookupGroups.reduce((sum, g) => sum + g.lookup_count, 0);
+    const activeLookupUsers = lookupGroups.filter(g => g.lookup_count > 0).length;
+
+    const visibleLookupGroups = (() => {
+        const term = lookupSearch.trim().toLowerCase();
+        if (!term) return lookupGroups;
+        return lookupGroups.filter(g =>
+            (g.full_name || '').toLowerCase().includes(term) ||
+            (g.email || '').toLowerCase().includes(term)
+        );
+    })();
 
     // --- Deal economics -------------------------------------------------------
     // Our true cost per *billed* credit is not the raw provider rate: rc-lookup.js
@@ -722,6 +806,7 @@ export default function AdminPanel() {
                         <div className="flex border-b border-white/10 overflow-x-auto custom-scrollbar">
                             {[
                                 { id: 'users', label: 'Users' },
+                                { id: 'lookups', label: 'Lookups' },
                                 { id: 'transactions', label: 'Transactions' },
                                 { id: 'calculator', label: 'Plans' },
                                 { id: 'wallet', label: 'Wallet' }
@@ -792,6 +877,127 @@ export default function AdminPanel() {
                                         ))}
                                     </tbody>
                                 </table>
+                            ) : activeTab === 'lookups' ? (
+                                <div className="space-y-3">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-white">Lookup data</h3>
+                                            <p className="text-xs text-slate-400 mt-0.5">
+                                                {totalLookups.toLocaleString('en-IN')} results from {activeLookupUsers} of {lookupGroups.length} users. Click a row to see them.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={() => downloadLookupsCsv(null)}
+                                            disabled={exportingKey !== null || totalLookups === 0}
+                                            className="text-xs px-3 py-2 rounded-lg bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                        >
+                                            {exportingKey === 'all' ? 'Exporting…' : 'Export all CSV'}
+                                        </button>
+                                    </div>
+
+                                    {lookupError && (
+                                        <div className="p-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/50">
+                                            {lookupError}
+                                        </div>
+                                    )}
+
+                                    <input
+                                        type="text"
+                                        value={lookupSearch}
+                                        onChange={(e) => setLookupSearch(e.target.value)}
+                                        placeholder="Filter by user name or email"
+                                        className="input-field text-sm"
+                                    />
+
+                                    {visibleLookupGroups.length === 0 ? (
+                                        <p className="text-sm text-slate-500 py-6 text-center">No users match that.</p>
+                                    ) : (
+                                        <table className="w-full min-w-[520px] text-left text-sm">
+                                            <thead className="text-slate-400 bg-slate-900/50 backdrop-blur-md border-b border-white/10">
+                                                <tr>
+                                                    <th className="pb-3 px-4">User</th>
+                                                    <th className="pb-3 px-4">Lookups</th>
+                                                    <th className="pb-3 px-4">Last lookup</th>
+                                                    <th className="pb-3 px-4 text-right">CSV</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {visibleLookupGroups.map(g => {
+                                                    const isOpen = expandedUserId === g.user_id;
+                                                    return (
+                                                        <React.Fragment key={g.user_id ?? 'orphaned'}>
+                                                            <tr
+                                                                className="border-b border-white/10 hover:bg-slate-700/20 cursor-pointer"
+                                                                onClick={() => setExpandedUserId(isOpen ? null : g.user_id)}
+                                                            >
+                                                                <td className="py-3 px-4">
+                                                                    <div className="font-medium text-white flex items-center gap-2">
+                                                                        <span className={`text-slate-500 text-xs transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                                                                        {g.full_name}
+                                                                    </div>
+                                                                    <div className="text-slate-400 text-xs pl-5">
+                                                                        {g.email}
+                                                                        {g.user_id !== null && <span className="text-slate-600"> · ID {g.user_id}</span>}
+                                                                    </div>
+                                                                </td>
+                                                                <td className="py-3 px-4">
+                                                                    <div className="font-semibold text-white">{g.lookup_count}</div>
+                                                                    <div className="text-xs text-slate-500">{g.with_mobile} with mobile</div>
+                                                                </td>
+                                                                <td className="py-3 px-4 text-slate-300 text-xs">
+                                                                    {g.last_lookup ? new Date(g.last_lookup).toLocaleString() : '—'}
+                                                                </td>
+                                                                <td className="py-3 px-4 text-right">
+                                                                    {/* Orphaned rows have no user to name a file after. */}
+                                                                    {g.user_id === null ? (
+                                                                        <span className="text-xs text-slate-600">in Export all</span>
+                                                                    ) : (
+                                                                        <button
+                                                                            onClick={(e) => { e.stopPropagation(); downloadLookupsCsv(g.user_id); }}
+                                                                            disabled={exportingKey !== null || g.lookup_count === 0}
+                                                                            title={`Download ${g.full_name}.csv`}
+                                                                            className="text-xs px-3 py-1 rounded bg-white/5 border border-white/10 text-slate-200 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                                                        >
+                                                                            {exportingKey === g.user_id ? 'Downloading…' : 'Download CSV'}
+                                                                        </button>
+                                                                    )}
+                                                                </td>
+                                                            </tr>
+                                                            {isOpen && (
+                                                                <tr className="border-b border-white/10 bg-slate-900/40">
+                                                                    <td colSpan={4} className="px-4 py-3">
+                                                                        {g.lookups.length === 0 ? (
+                                                                            <p className="text-xs text-slate-500">No lookups yet.</p>
+                                                                        ) : (
+                                                                            <div className="space-y-2">
+                                                                                {g.lookups.map(l => (
+                                                                                    <div key={l.id} className="bg-white/5 border border-white/10 rounded-lg p-3">
+                                                                                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                                                                                            <span className="font-medium text-white">{l.owner_name || '—'}</span>
+                                                                                            <span className="text-indigo-300 text-xs">{l.mobile_number || 'no mobile'}</span>
+                                                                                        </div>
+                                                                                        <div className="text-xs text-slate-400 mt-1">
+                                                                                            {l.present_address || '—'}{l.pincode ? ` · ${l.pincode}` : ''}
+                                                                                        </div>
+                                                                                        <div className="text-[11px] text-slate-500 mt-1">
+                                                                                            RC {l.rc_number}
+                                                                                            {l.vehicle_number ? ` · ${l.vehicle_number}` : ''}
+                                                                                            {' · '}{new Date(l.lookup_date).toLocaleString()}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                ))}
+                                                                            </div>
+                                                                        )}
+                                                                    </td>
+                                                                </tr>
+                                                            )}
+                                                        </React.Fragment>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
                             ) : activeTab === 'transactions' ? (
                                 <table className="w-full min-w-[520px] text-left text-sm">
                                     <thead className="text-slate-400 bg-slate-900/50 backdrop-blur-md border-b border-white/10">
