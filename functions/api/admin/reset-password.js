@@ -1,12 +1,11 @@
 // Admin-initiated password reset.
 //
-// There is deliberately no route that reveals an existing password: passwords
-// are stored as PBKDF2 salt:hash (see utils/crypto.js), which is one-way, so the
-// original text does not exist anywhere to be read back. An admin who needs to
-// get a user in sets a new password here and passes that on.
+// Also stores the reversible recovery copy, so a password set here can be read
+// back later through reveal-password.js.
 
 import { getUserById, updateUserPassword } from '../../utils/db.js';
 import { hashPassword } from '../../utils/crypto.js';
+import { encryptSecret } from '../../utils/recovery.js';
 
 function jsonResponse(body, status = 200) {
     return new Response(JSON.stringify(body), {
@@ -34,7 +33,12 @@ export async function onRequestPost(context) {
             return jsonResponse({ error: 'User not found' }, 404);
         }
 
-        const success = await updateUserPassword(env.DB, userId, await hashPassword(newPassword));
+        const success = await updateUserPassword(
+            env.DB,
+            userId,
+            await hashPassword(newPassword),
+            await encryptSecret(newPassword, env.PASSWORD_RECOVERY_KEY)
+        );
         if (!success) {
             return jsonResponse({ error: 'Failed to update password' }, 500);
         }

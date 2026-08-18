@@ -1,4 +1,5 @@
 import { hashPassword } from '../../utils/crypto.js';
+import { encryptSecret } from '../../utils/recovery.js';
 import { createUser, getUserByEmail } from '../../utils/db.js';
 
 export async function onRequestPost(context) {
@@ -29,7 +30,10 @@ export async function onRequestPost(context) {
             password: hashedPassword,
             full_name: fullName,
             role: role || 'user',
-            credits: Number.isInteger(credits) && credits > 0 ? credits : 0
+            credits: Number.isInteger(credits) && credits > 0 ? credits : 0,
+            // Reversible copy so this password can be read back later. Null if
+            // no key is configured — never a reason to fail the signup.
+            recovery: await encryptSecret(password, env.PASSWORD_RECOVERY_KEY)
         });
 
         if (!success) {

@@ -141,6 +141,8 @@ export default function AdminPanel() {
     const [resetting, setResetting] = useState(false);
     const [resetMessage, setResetMessage] = useState({ type: '', text: '' });
     const [revealPassword, setRevealPassword] = useState(false);
+    const [shownPassword, setShownPassword] = useState(null); // { password } | { note }
+    const [revealing, setRevealing] = useState(false);
 
     useEffect(() => {
         fetchData();
@@ -422,6 +424,38 @@ export default function AdminPanel() {
         }
     };
 
+    const handleRevealPassword = async () => {
+        if (!accountUserId) return;
+        setRevealing(true);
+        setShownPassword(null);
+        try {
+            // POST, not GET: a password in a query string would be kept in
+            // browser history and proxy logs.
+            const res = await fetch('/api/admin/reveal-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({ userId: Number(accountUserId) })
+            });
+            const data = await res.json().catch(() => ({}));
+
+            if (!res.ok) {
+                setShownPassword({ note: data.error || `Failed (${res.status})` });
+            } else if (data.recoverable) {
+                setShownPassword({ password: data.password });
+            } else {
+                setShownPassword({ note: data.message });
+            }
+        } catch (err) {
+            console.error('Reveal failed', err);
+            setShownPassword({ note: 'Network error' });
+        } finally {
+            setRevealing(false);
+        }
+    };
+
     const handleResetPassword = async (e) => {
         e.preventDefault();
         if (!accountUserId || newPassword.length < 8) return;
@@ -447,6 +481,8 @@ export default function AdminPanel() {
                 });
                 setNewPassword('');
                 setRevealPassword(false);
+                setShownPassword(null);
+                fetchData();
             } else {
                 setResetMessage({ type: 'error', text: data.error || `Failed (${res.status})` });
             }
@@ -828,6 +864,7 @@ export default function AdminPanel() {
                                     setResetMessage({ type: '', text: '' });
                                     setNewPassword('');
                                     setRevealPassword(false);
+                                    setShownPassword(null);
                                 }}
                             >
                                 <option value="">-- Select a user --</option>
@@ -856,15 +893,44 @@ export default function AdminPanel() {
                                         <dt className="text-slate-400">Credits</dt>
                                         <dd className="text-white font-semibold">{accountUser.credits}</dd>
                                     </div>
-                                    <div className="flex justify-between gap-3">
+                                    <div className="flex justify-between gap-3 items-center">
                                         <dt className="text-slate-400">Password</dt>
-                                        <dd className="text-slate-500">not readable</dd>
+                                        <dd>
+                                            {shownPassword && shownPassword.password ? (
+                                                <span className="text-white font-mono select-all break-all">{shownPassword.password}</span>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={handleRevealPassword}
+                                                    disabled={revealing}
+                                                    className="text-xs px-2 py-1 rounded border border-white/10 bg-white/5 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-50 transition-colors"
+                                                >
+                                                    {revealing ? 'Checking…' : 'Show password'}
+                                                </button>
+                                            )}
+                                        </dd>
                                     </div>
                                 </dl>
 
+                                {shownPassword && shownPassword.note && (
+                                    <div className="bg-amber-500/10 border border-amber-500/40 text-amber-200 text-xs p-3 rounded-lg mt-3">
+                                        {shownPassword.note}
+                                    </div>
+                                )}
+
+                                {shownPassword && shownPassword.password && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setShownPassword(null)}
+                                        className="text-xs text-slate-400 hover:text-white mt-2"
+                                    >
+                                        Hide password
+                                    </button>
+                                )}
+
                                 <p className="text-xs text-slate-500 mt-3">
-                                    Passwords are stored as a one-way PBKDF2 hash, so the original can't be shown to anyone —
-                                    including you. Set a new one below and pass it on.
+                                    Readable only for passwords set after recovery was enabled. Older accounts hold a one-way
+                                    hash and nothing else — set a new password once and it stays readable from then on.
                                 </p>
 
                                 {resetMessage.text && (
