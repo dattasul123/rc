@@ -5,7 +5,12 @@
 // The admin _middleware demands a Bearer token, which a plain <a href="..."> or
 // window.open cannot send. The frontend therefore fetches this with the header,
 // turns the body into a blob and clicks it — and reads the filename back out of
-// Content-Disposition below, so the naming lives in one place.
+// Content-Disposition, which is built in utils/csv.js alongside the quoting.
+//
+// Users export their own data through /api/user/lookups-export, which scopes to
+// the JWT instead of accepting a userId.
+
+import { toCsv, csvFilename, csvResponse } from '../../utils/csv.js';
 
 const COLUMNS = [
     ['user_id', r => r.user_id],
@@ -20,41 +25,6 @@ const COLUMNS = [
     ['credits_deducted', r => r.credits_deducted],
     ['lookup_date', r => r.lookup_date]
 ];
-
-// RFC 4180: wrap in quotes if the value holds a comma, quote or newline, and
-// double up any embedded quotes. Provider addresses contain all three.
-function csvCell(value) {
-    if (value === null || value === undefined) return '';
-    const s = String(value);
-    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-function toCsv(rows) {
-    const lines = [COLUMNS.map(([header]) => header).join(',')];
-    for (const row of rows) {
-        lines.push(COLUMNS.map(([, read]) => csvCell(read(row))).join(','));
-    }
-    // Leading BOM, otherwise Excel opens UTF-8 addresses as mojibake.
-    return '﻿' + lines.join('\r\n') + '\r\n';
-}
-
-// The file is named after the user, and that name is whatever an admin typed
-// into Create User. Strip what a filesystem rejects, and \r\n along with it —
-// those would let a name break out of the Content-Disposition header.
-function csvFilename(fullName, userId) {
-    const cleaned = (fullName || '')
-        .replace(/[\\/:*?"<>|\r\n]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    return `${cleaned || `user-${userId}`}.csv`;
-}
-
-// Non-ASCII names still have to travel in a header: send a stripped-down
-// filename for old clients and the real one via RFC 5987 filename*.
-function contentDisposition(filename) {
-    const ascii = filename.replace(/[^\x20-\x7e]/g, '_');
-    return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
-}
 
 export async function onRequestGet(context) {
     try {
@@ -97,16 +67,7 @@ export async function onRequestGet(context) {
             filename = csvFilename(owner?.full_name, userId);
         }
 
-        return new Response(toCsv(results), {
-            status: 200,
-            headers: {
-                'Content-Type': 'text/csv; charset=utf-8',
-                'Content-Disposition': contentDisposition(filename),
-                // Without this the browser can hand back a stale export after
-                // the user has run more lookups.
-                'Cache-Control': 'no-store'
-            }
-        });
+        return csvResponse(toCsv(results, COLUMNS), filename);
     } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), {
             status: 500,

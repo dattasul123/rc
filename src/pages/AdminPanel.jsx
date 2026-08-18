@@ -135,6 +135,13 @@ export default function AdminPanel() {
     const [savingPremium, setSavingPremium] = useState(false);
     const [premiumMessage, setPremiumMessage] = useState({ type: '', text: '' });
 
+    // Account panel: pick a user, read their identifiers, set a new password.
+    const [accountUserId, setAccountUserId] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [resetting, setResetting] = useState(false);
+    const [resetMessage, setResetMessage] = useState({ type: '', text: '' });
+    const [revealPassword, setRevealPassword] = useState(false);
+
     useEffect(() => {
         fetchData();
     }, []);
@@ -415,6 +422,42 @@ export default function AdminPanel() {
         }
     };
 
+    const handleResetPassword = async (e) => {
+        e.preventDefault();
+        if (!accountUserId || newPassword.length < 8) return;
+
+        setResetting(true);
+        setResetMessage({ type: '', text: '' });
+
+        try {
+            const res = await fetch('/api/admin/reset-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({ userId: Number(accountUserId), newPassword })
+            });
+            const data = await res.json().catch(() => ({}));
+
+            if (res.ok) {
+                setResetMessage({
+                    type: 'success',
+                    text: `${data.message} — send them the new password now, it cannot be read back later.`
+                });
+                setNewPassword('');
+                setRevealPassword(false);
+            } else {
+                setResetMessage({ type: 'error', text: data.error || `Failed (${res.status})` });
+            }
+        } catch (err) {
+            console.error('Password reset failed', err);
+            setResetMessage({ type: 'error', text: 'Network error' });
+        } finally {
+            setResetting(false);
+        }
+    };
+
     const handleLogout = () => {
         logout();
         navigate('/login');
@@ -474,6 +517,8 @@ export default function AdminPanel() {
             discountAlternativeCost: total * 0.1
         };
     });
+
+    const accountUser = users.find((u) => String(u.id) === String(accountUserId)) || null;
 
     // --- Wallet exposure ------------------------------------------------------
     // Credits we have handed out but clients have not burnt yet are a claim on
@@ -768,6 +813,101 @@ export default function AdminPanel() {
                                 {savingPremium ? 'Saving...' : 'Save Threshold'}
                             </button>
                         </form>
+                    </div>
+
+                    <div className="glass-panel p-5 sm:p-6">
+                        <h2 className="text-lg font-semibold text-white mb-4">User Account</h2>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-1">Select User</label>
+                            <select
+                                className="input-field bg-slate-900"
+                                value={accountUserId}
+                                onChange={(e) => {
+                                    setAccountUserId(e.target.value);
+                                    setResetMessage({ type: '', text: '' });
+                                    setNewPassword('');
+                                    setRevealPassword(false);
+                                }}
+                            >
+                                <option value="">-- Select a user --</option>
+                                {users.map(u => (
+                                    <option key={u.id} value={u.id}>{u.full_name} ({u.email})</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {accountUser && (
+                            <>
+                                <dl className="mt-4 space-y-2 text-sm bg-white/5 border border-white/10 rounded-lg p-4">
+                                    <div className="flex justify-between gap-3">
+                                        <dt className="text-slate-400">User ID</dt>
+                                        <dd className="text-white font-mono">{accountUser.id}</dd>
+                                    </div>
+                                    <div className="flex justify-between gap-3 min-w-0">
+                                        <dt className="text-slate-400 shrink-0">Login email</dt>
+                                        <dd className="text-white font-mono truncate" title={accountUser.email}>{accountUser.email}</dd>
+                                    </div>
+                                    <div className="flex justify-between gap-3">
+                                        <dt className="text-slate-400">Role</dt>
+                                        <dd className="text-white">{accountUser.role}</dd>
+                                    </div>
+                                    <div className="flex justify-between gap-3">
+                                        <dt className="text-slate-400">Credits</dt>
+                                        <dd className="text-white font-semibold">{accountUser.credits}</dd>
+                                    </div>
+                                    <div className="flex justify-between gap-3">
+                                        <dt className="text-slate-400">Password</dt>
+                                        <dd className="text-slate-500">not readable</dd>
+                                    </div>
+                                </dl>
+
+                                <p className="text-xs text-slate-500 mt-3">
+                                    Passwords are stored as a one-way PBKDF2 hash, so the original can't be shown to anyone —
+                                    including you. Set a new one below and pass it on.
+                                </p>
+
+                                {resetMessage.text && (
+                                    <div className={`p-3 rounded-lg mt-4 text-sm ${resetMessage.type === 'success' ? 'bg-green-500/10 text-green-400 border border-green-500/50' : 'bg-red-500/10 text-red-400 border border-red-500/50'}`}>
+                                        {resetMessage.text}
+                                    </div>
+                                )}
+
+                                <form onSubmit={handleResetPassword} className="space-y-3 mt-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-300 mb-1">New password</label>
+                                        <div className="relative">
+                                            <input
+                                                type={revealPassword ? 'text' : 'password'}
+                                                className="input-field pr-16"
+                                                placeholder="At least 8 characters"
+                                                value={newPassword}
+                                                onChange={(e) => setNewPassword(e.target.value)}
+                                                minLength={8}
+                                                required
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setRevealPassword(!revealPassword)}
+                                                className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white"
+                                            >
+                                                {revealPassword ? 'Hide' : 'Show'}
+                                            </button>
+                                        </div>
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            Reveal it so you can copy it out — this is your only chance to read it.
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="submit"
+                                        className="btn-primary w-full"
+                                        disabled={resetting || newPassword.length < 8}
+                                    >
+                                        {resetting ? 'Updating...' : `Set password for ${accountUser.full_name}`}
+                                    </button>
+                                </form>
+                            </>
+                        )}
                     </div>
 
                     <div className="glass-panel p-5 sm:p-6">
