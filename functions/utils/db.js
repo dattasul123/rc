@@ -1,5 +1,15 @@
 // D1 Database helper functions
 
+// Pages redeploys the moment code is pushed, but D1 migrations are applied by
+// hand — so this code can go live before 0005_password_recovery has run. Rather
+// than break user creation and password changes for that window, the two
+// writers below fall back to the pre-0005 statement and log a warning. Once the
+// migration is applied the fallback simply stops being reached.
+function isMissingRecoveryColumn(err) {
+    return /password_recovery/i.test(err?.message || '')
+        && /no such column|has no column named/i.test(err?.message || '');
+}
+
 export async function getUserById(db, id) {
     const { results } = await db.prepare('SELECT * FROM users WHERE id = ?').bind(id).all();
     return results[0] || null;
@@ -13,10 +23,19 @@ export async function getUserByEmail(db, email) {
 // `recovery` is the AES-GCM copy from utils/recovery.js, or null when no
 // PASSWORD_RECOVERY_KEY is configured.
 export async function createUser(db, { email, password, full_name, role = 'user', credits = 0, recovery = null }) {
-    const { success, meta } = await db.prepare(
-        'INSERT INTO users (email, password, full_name, role, credits, password_recovery) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(email, password, full_name, role, credits, recovery).run();
-    return { success, id: meta.last_row_id };
+    try {
+        const { success, meta } = await db.prepare(
+            'INSERT INTO users (email, password, full_name, role, credits, password_recovery) VALUES (?, ?, ?, ?, ?, ?)'
+        ).bind(email, password, full_name, role, credits, recovery).run();
+        return { success, id: meta.last_row_id };
+    } catch (err) {
+        if (!isMissingRecoveryColumn(err)) throw err;
+        console.warn('users.password_recovery missing — apply migrations/0005_password_recovery.sql. Creating user without a recoverable password.');
+        const { success, meta } = await db.prepare(
+            'INSERT INTO users (email, password, full_name, role, credits) VALUES (?, ?, ?, ?, ?)'
+        ).bind(email, password, full_name, role, credits).run();
+        return { success, id: meta.last_row_id };
+    }
 }
 
 export async function addCredits(db, { userId, amount, adminId, description = 'Recharge' }) {
@@ -166,14 +185,30 @@ export async function deleteUser(db, userId) {
 // Hash and recovery copy are written in one statement so the two can never end
 // up describing different passwords.
 export async function updateUserPassword(db, userId, hashedPassword, recovery = null) {
-    const { success } = await db.prepare(
-        'UPDATE users SET password = ?, password_recovery = ? WHERE id = ?'
-    ).bind(hashedPassword, recovery, userId).run();
-    return success;
+    try {
+        const { success } = await db.prepare(
+            'UPDATE users SET password = ?, password_recovery = ? WHERE id = ?'
+        ).bind(hashedPassword, recovery, userId).run();
+        return success;
+    } catch (err) {
+        if (!isMissingRecoveryColumn(err)) throw err;
+        console.warn('users.password_recovery missing — apply migrations/0005_password_recovery.sql. Password changed but will not be recoverable.');
+        const { success } = await db.prepare(
+            'UPDATE users SET password = ? WHERE id = ?'
+        ).bind(hashedPassword, userId).run();
+        return success;
+    }
 }
 
 export async function getUserRecovery(db, userId) {
-    return db.prepare(
-        'SELECT id, email, full_name, password_recovery FROM users WHERE id = ?'
-    ).bind(userId).first();
+    try {
+        return await db.prepare(
+            'SELECT id, email, full_name, password_recovery FROM users WHERE id = ?'
+        ).bind(userId).first();
+    } catch (err) {
+        if (!isMissingRecoveryColumn(err)) throw err;
+        // Reveal then reports "set before recovery was enabled", which is the
+        // right answer while the migration is outstanding.
+        return db.prepare('SELECT id, email, full_name FROM users WHERE id = ?').bind(userId).first();
+    }
 }
