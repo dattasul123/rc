@@ -1,0 +1,11 @@
+-- Admin-readable password recovery.
+--
+-- Login keeps authenticating against users.password (one-way PBKDF2). This
+-- column holds a second, reversible copy encrypted with PASSWORD_RECOVERY_KEY
+-- so an admin can read a password back when a client's colleague set it and
+-- nobody remembers what it was.
+--
+-- Only populated from the moment this ships: passwords already in the table
+-- exist solely as hashes and cannot be recovered. Those users read as
+-- "set before recovery was enabled" until their password is next changed.
+ALTER TABLE users ADD COLUMN password_recovery TEXT;

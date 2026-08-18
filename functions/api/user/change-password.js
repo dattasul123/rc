@@ -1,5 +1,6 @@
 import { getUserById, updateUserPassword } from '../../utils/db.js';
 import { verifyPassword, hashPassword } from '../../utils/crypto.js';
+import { encryptSecret } from '../../utils/recovery.js';
 
 export async function onRequestPost(context) {
     try {
@@ -26,7 +27,12 @@ export async function onRequestPost(context) {
         }
 
         const newHashedPassword = await hashPassword(newPassword);
-        const success = await updateUserPassword(env.DB, userId, newHashedPassword);
+        const success = await updateUserPassword(
+            env.DB,
+            userId,
+            newHashedPassword,
+            await encryptSecret(newPassword, env.PASSWORD_RECOVERY_KEY)
+        );
 
         if (!success) {
             return new Response(JSON.stringify({ error: 'Failed to update password' }), { status: 500 });

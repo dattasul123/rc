@@ -10,10 +10,12 @@ export async function getUserByEmail(db, email) {
     return results[0] || null;
 }
 
-export async function createUser(db, { email, password, full_name, role = 'user', credits = 0 }) {
+// `recovery` is the AES-GCM copy from utils/recovery.js, or null when no
+// PASSWORD_RECOVERY_KEY is configured.
+export async function createUser(db, { email, password, full_name, role = 'user', credits = 0, recovery = null }) {
     const { success, meta } = await db.prepare(
-        'INSERT INTO users (email, password, full_name, role, credits) VALUES (?, ?, ?, ?, ?)'
-    ).bind(email, password, full_name, role, credits).run();
+        'INSERT INTO users (email, password, full_name, role, credits, password_recovery) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(email, password, full_name, role, credits, recovery).run();
     return { success, id: meta.last_row_id };
 }
 
@@ -161,9 +163,17 @@ export async function deleteUser(db, userId) {
     return batch[2].meta.changes > 0;
 }
 
-export async function updateUserPassword(db, userId, hashedPassword) {
+// Hash and recovery copy are written in one statement so the two can never end
+// up describing different passwords.
+export async function updateUserPassword(db, userId, hashedPassword, recovery = null) {
     const { success } = await db.prepare(
-        'UPDATE users SET password = ? WHERE id = ?'
-    ).bind(hashedPassword, userId).run();
+        'UPDATE users SET password = ?, password_recovery = ? WHERE id = ?'
+    ).bind(hashedPassword, recovery, userId).run();
     return success;
+}
+
+export async function getUserRecovery(db, userId) {
+    return db.prepare(
+        'SELECT id, email, full_name, password_recovery FROM users WHERE id = ?'
+    ).bind(userId).first();
 }

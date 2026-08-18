@@ -2,7 +2,11 @@
 CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
+    password TEXT NOT NULL,          -- one-way PBKDF2 hash, used for login
+    -- Reversible copy encrypted with PASSWORD_RECOVERY_KEY (see utils/recovery.js)
+    -- so an admin can read a password back. Null for anyone whose password was
+    -- set before recovery existed — those are hash-only and unrecoverable.
+    password_recovery TEXT,
     full_name TEXT NOT NULL,
     role TEXT DEFAULT 'user', -- 'user' or 'admin'
     credits INTEGER DEFAULT 0,
