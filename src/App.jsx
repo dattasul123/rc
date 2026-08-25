@@ -1,8 +1,14 @@
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import AdminPanel from './pages/AdminPanel';
+
+// Unlinked, owner-only. Lazy so it is split into its own chunk and its markup
+// never appears in the bundle every user downloads. The real gate is
+// server-side (LEDGER_OWNER_EMAIL) — this only keeps it out of casual sight.
+const Ledger = lazy(() => import('./pages/Ledger'));
 
 function ProtectedRoute({ children, adminOnly = false }) {
     const { user } = useAuth();
@@ -45,6 +51,16 @@ function App() {
                     <Route path="/admin" element={
                         <ProtectedRoute adminOnly={true}>
                             <AdminPanel />
+                        </ProtectedRoute>
+                    } />
+
+                    {/* Deliberately not linked from anywhere. Any logged-in user
+                        may load it; only the owner's token gets data back. */}
+                    <Route path="/ledger" element={
+                        <ProtectedRoute>
+                            <Suspense fallback={null}>
+                                <Ledger />
+                            </Suspense>
                         </ProtectedRoute>
                     } />
                 </Routes>
