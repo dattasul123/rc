@@ -2,6 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
+// SQLite writes CURRENT_TIMESTAMP as UTC with no zone marker. Parsing it raw
+// makes the browser read it as local time and shifts everything by +5:30.
+const parseUtc = (s) => new Date(`${String(s).replace(' ', 'T')}Z`);
+
+// The IST calendar day as YYYY-MM-DD — the same day the export endpoint files
+// a lookup under, so the count shown here matches the rows in the CSV.
+const istDay = (date) => date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
 export default function Dashboard() {
     const { user, logout, fetchProfile } = useAuth();
     const navigate = useNavigate();
@@ -19,8 +27,17 @@ export default function Dashboard() {
     const [isPwdLoading, setIsPwdLoading] = useState(false);
 
     // Self-service CSV export
-    const [isExporting, setIsExporting] = useState(false);
+    // 'range' | 'all' while a download is in flight, so only the clicked button
+    // says "Preparing…".
+    const [exporting, setExporting] = useState(null);
     const [exportError, setExportError] = useState('');
+    const today = istDay(new Date());
+    const [exportFrom, setExportFrom] = useState(today);
+    const [exportTo, setExportTo] = useState(today);
+    const lookupsInRange = history.filter((item) => {
+        const day = istDay(parseUtc(item.lookup_date));
+        return day >= exportFrom && day <= exportTo;
+    }).length;
 
     useEffect(() => {
         fetchHistory();
@@ -42,12 +59,16 @@ export default function Dashboard() {
 
     // The user middleware wants an Authorization header, which a plain <a href>
     // or window.open cannot send, so the file is fetched here and handed to the
-    // browser as a blob under the filename the server chose.
-    const downloadMyCsv = async () => {
-        setIsExporting(true);
+    // browser as a blob under the filename the server chose. 'range' sends the
+    // picked dates; 'all' sends none, which the endpoint reads as every lookup.
+    const downloadMyCsv = async (kind) => {
+        setExporting(kind);
         setExportError('');
         try {
-            const res = await fetch('/api/user/lookups-export', {
+            const query = kind === 'range'
+                ? `?${new URLSearchParams({ from: exportFrom, to: exportTo })}`
+                : '';
+            const res = await fetch(`/api/user/lookups-export${query}`, {
                 headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
             });
 
@@ -70,7 +91,7 @@ export default function Dashboard() {
             const plain = disposition.match(/filename="([^"]+)"/i);
             const filename = encoded ? decodeURIComponent(encoded[1])
                 : plain ? plain[1]
-                : 'my-lookups.csv';
+                : 'lookups.csv';
 
             const url = URL.createObjectURL(await res.blob());
             const link = document.createElement('a');
@@ -86,7 +107,7 @@ export default function Dashboard() {
             console.error('CSV export failed', err);
             setExportError('Export failed — check your connection and try again.');
         } finally {
-            setIsExporting(false);
+            setExporting(null);
         }
     };
 
@@ -255,15 +276,48 @@ export default function Dashboard() {
 
                 <div className="md:col-span-1">
                     <div className="glass-panel p-5 sm:p-8 h-full flex flex-col">
-                        <div className="flex items-center justify-between gap-3 mb-4 sm:mb-6">
-                            <h2 className="text-xl font-bold text-white drop-shadow-md">Recent Lookups</h2>
+                        <h2 className="text-xl font-bold text-white drop-shadow-md mb-4">Recent Lookups</h2>
+                        <div className="bg-black/20 border border-white/10 rounded-lg p-3 mb-4 sm:mb-6 space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                                <label className="text-xs text-slate-400">
+                                    From
+                                    <input
+                                        type="date"
+                                        value={exportFrom}
+                                        max={exportTo}
+                                        onChange={(e) => e.target.value && setExportFrom(e.target.value)}
+                                        className="mt-1 w-full bg-black/30 border border-white/15 rounded-md px-2 py-1.5 text-sm text-white [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                                    />
+                                </label>
+                                <label className="text-xs text-slate-400">
+                                    To
+                                    <input
+                                        type="date"
+                                        value={exportTo}
+                                        min={exportFrom}
+                                        max={today}
+                                        onChange={(e) => e.target.value && setExportTo(e.target.value)}
+                                        className="mt-1 w-full bg-black/30 border border-white/15 rounded-md px-2 py-1.5 text-sm text-white [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                                    />
+                                </label>
+                            </div>
                             <button
-                                onClick={downloadMyCsv}
-                                disabled={isExporting || history.length === 0}
-                                title={history.length === 0 ? 'Nothing to export yet' : 'Download all your lookups as CSV'}
-                                className="text-xs px-3 py-2 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                                onClick={() => downloadMyCsv('range')}
+                                disabled={exporting !== null || lookupsInRange === 0 || exportFrom > exportTo}
+                                title={lookupsInRange === 0 ? 'No lookups on these dates' : 'Download these lookups as CSV'}
+                                className="w-full text-xs px-3 py-2 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
                             >
-                                {isExporting ? 'Preparing…' : '↓ CSV'}
+                                {exporting === 'range' ? 'Preparing…'
+                                    : `↓ CSV · ${lookupsInRange} lookup${lookupsInRange === 1 ? '' : 's'}`}
+                            </button>
+                            <button
+                                onClick={() => downloadMyCsv('all')}
+                                disabled={exporting !== null || history.length === 0}
+                                title={history.length === 0 ? 'Nothing to export yet' : 'Download every lookup, with the date each was made'}
+                                className="w-full text-xs px-3 py-2 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                            >
+                                {exporting === 'all' ? 'Preparing…'
+                                    : `↓ All dates · ${history.length} lookup${history.length === 1 ? '' : 's'}`}
                             </button>
                         </div>
                         {exportError && (
@@ -280,7 +334,7 @@ export default function Dashboard() {
                                         <div className="flex justify-between items-start mb-1">
                                             <span className="font-medium text-white">{item.rc_number}</span>
                                             <span className="text-xs text-slate-500">
-                                                {new Date(item.lookup_date).toLocaleDateString()}
+                                                {parseUtc(item.lookup_date).toLocaleDateString()}
                                             </span>
                                         </div>
                                         {item.owner_name && (
