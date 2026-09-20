@@ -15,6 +15,23 @@ export async function getUserById(db, id) {
     return results[0] || null;
 }
 
+// One round trip instead of two. The D1 primary is ~350ms from the colo that
+// serves our users, so every extra *sequential* query is a third of a second the
+// client waits; batching sends both in a single request. Returns the same pair
+// getUserById + getPremiumThreshold used to return separately.
+export async function getLookupPreflight(db, userId) {
+    const [userRes, settingRes] = await db.batch([
+        db.prepare('SELECT * FROM users WHERE id = ?').bind(userId),
+        db.prepare("SELECT value FROM settings WHERE key = 'premium_threshold'")
+    ]);
+    const raw = settingRes.results[0] ? settingRes.results[0].value : '0';
+    const n = parseInt(raw, 10);
+    return {
+        user: userRes.results[0] || null,
+        premiumThreshold: Number.isFinite(n) && n >= 0 ? n : 0
+    };
+}
+
 export async function getUserByEmail(db, email) {
     const { results } = await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).all();
     return results[0] || null;

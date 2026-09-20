@@ -5,7 +5,7 @@ export async function onRequestGet(context) {
         const { request, env, data } = context;
         const userId = data.user.id;
 
-        const user = await getUserById(env.DB, userId);
+        const user = await getUserById(data.session || env.DB, userId);
         if (!user) {
             return new Response(JSON.stringify({ error: 'User not found' }), { status: 404 });
         }

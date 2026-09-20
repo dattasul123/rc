@@ -3,7 +3,7 @@ export async function onRequestGet(context) {
         const { env, data } = context;
         const userId = data.user.id;
 
-        const { results } = await env.DB.prepare(
+        const { results } = await (data.session || env.DB).prepare(
             'SELECT * FROM lookup_history WHERE user_id = ? ORDER BY lookup_date DESC'
         ).bind(userId).all();
 

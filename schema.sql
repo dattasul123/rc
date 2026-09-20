@@ -42,6 +42,13 @@ CREATE TABLE lookup_history (
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- Without these, every history list, admin table and CSV export scans the whole
+-- table and sorts it (see migrations/0006_performance_indexes.sql).
+CREATE INDEX idx_lookup_history_user_date ON lookup_history(user_id, lookup_date DESC);
+CREATE INDEX idx_lookup_history_date ON lookup_history(lookup_date DESC);
+CREATE INDEX idx_transactions_user_created ON transactions(user_id, created_at DESC);
+CREATE INDEX idx_transactions_created ON transactions(created_at DESC);
+
 -- Global key/value settings, managed by admins and applied to all users.
 -- e.g. 'premium_threshold' = minimum credit balance required to run a lookup.
 CREATE TABLE settings (

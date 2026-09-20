@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import { apiFetch } from '../lib/api';
 
 // SQLite writes CURRENT_TIMESTAMP as UTC with no zone marker. Parsing it raw
 // makes the browser read it as local time and shifts everything by +5:30.
@@ -11,7 +12,7 @@ const parseUtc = (s) => new Date(`${String(s).replace(' ', 'T')}Z`);
 const istDay = (date) => date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
 export default function Dashboard() {
-    const { user, logout, fetchProfile } = useAuth();
+    const { user, logout, setCredits } = useAuth();
     const navigate = useNavigate();
     const [rcNumber, setRcNumber] = useState('');
     const [lookupResult, setLookupResult] = useState(null);
@@ -45,7 +46,7 @@ export default function Dashboard() {
 
     const fetchHistory = async () => {
         try {
-            const res = await fetch('/api/user/history', {
+            const res = await apiFetch('/api/user/history', {
                 headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
             });
             if (res.ok) {
@@ -68,7 +69,7 @@ export default function Dashboard() {
             const query = kind === 'range'
                 ? `?${new URLSearchParams({ from: exportFrom, to: exportTo })}`
                 : '';
-            const res = await fetch(`/api/user/lookups-export${query}`, {
+            const res = await apiFetch(`/api/user/lookups-export${query}`, {
                 headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
             });
 
@@ -111,6 +112,21 @@ export default function Dashboard() {
         }
     };
 
+    // Mirror of the row the server writes to lookup_history for this lookup, so the
+    // list can show it immediately. `lookup_date` is formatted the way SQLite
+    // stores CURRENT_TIMESTAMP (UTC, no zone marker) because parseUtc expects that.
+    const historyRowFor = (result) => ({
+        id: `pending-${Date.now()}`,
+        rc_number: result.rcNumber,
+        mobile_number: result.mobileNumber,
+        owner_name: result.ownerName === 'N/A' ? null : result.ownerName,
+        vehicle_number: result.vehicleNumber,
+        present_address: result.address === 'N/A' ? null : result.address,
+        pincode: result.pincode === 'N/A' ? null : result.pincode,
+        credits_deducted: 1,
+        lookup_date: new Date().toISOString().slice(0, 19).replace('T', ' ')
+    });
+
     const handleLookup = async (e) => {
         e.preventDefault();
         setError('');
@@ -118,7 +134,7 @@ export default function Dashboard() {
         setIsLoading(true);
 
         try {
-            const res = await fetch('/api/user/rc-lookup', {
+            const res = await apiFetch('/api/user/rc-lookup', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -130,8 +146,13 @@ export default function Dashboard() {
 
             if (res.ok) {
                 setLookupResult(data);
-                fetchProfile(); // Refresh credits
-                fetchHistory(); // Refresh history
+                // Everything the header and the history list need is already in
+                // this response, so neither is re-fetched: /api/user/profile and
+                // /api/user/history are each a round trip to a distant database,
+                // and the history row is written after the response is sent, so
+                // re-fetching could even race it and come back without this lookup.
+                if (typeof data.remainingCredits === 'number') setCredits(data.remainingCredits);
+                setHistory((current) => [historyRowFor(data.data), ...current]);
             } else {
                 setError(data.error || data.message || 'Lookup failed');
             }
@@ -153,7 +174,7 @@ export default function Dashboard() {
 
         setIsPwdLoading(true);
         try {
-            const res = await fetch('/api/user/change-password', {
+            const res = await apiFetch('/api/user/change-password', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
