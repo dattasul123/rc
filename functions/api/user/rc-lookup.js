@@ -1,9 +1,8 @@
 import {
-    getUserById,
+    getLookupPreflight,
     deductCredit,
     saveLookupHistory,
-    saveProviderAnomaly,
-    getPremiumThreshold
+    saveProviderAnomaly
 } from '../../utils/db.js';
 
 const DEFAULT_IDSPAY_BASE_URL = 'https://javabackend.idspay.in/api/v1/prod';
@@ -152,6 +151,9 @@ export async function onRequestPost(context) {
     try {
         const { request, env, data } = context;
         const userId = data.user.id;
+        // Reads and writes share the request's session (primary-first for a POST),
+        // so the bookmark returned to the client already covers this lookup.
+        const db = data.session || env.DB;
         const { rcNumber } = await request.json();
         // Canonicalize to bare alphanumerics (uppercase). Users type spaces/hyphens
         // ("HR 26 EZ 2802"); RC Advance V2 rejects those. Both IDSPay endpoints
@@ -166,11 +168,11 @@ export async function onRequestPost(context) {
             return jsonResponse({ success: false, message: 'Invalid RC number format' }, 400);
         }
 
-        // Global "premium" threshold set by admin: a user must have MORE than this
-        // many credits to run a lookup. Applies to all users.
-        const premiumThreshold = await getPremiumThreshold(env.DB);
-
-        const user = await getUserById(env.DB, userId);
+        // The user row and the global "premium" threshold (admin-set: a user must
+        // have MORE than this many credits to run a lookup) are fetched in one
+        // batched round trip — neither depends on the other, and a second
+        // sequential query would cost the client another ~350ms.
+        const { user, premiumThreshold } = await getLookupPreflight(db, userId);
         if (!user || user.credits <= premiumThreshold) {
             const message = premiumThreshold > 0
                 ? `A minimum balance above ${premiumThreshold} credits is required to run a lookup`
@@ -246,7 +248,7 @@ export async function onRequestPost(context) {
             const anomaly = buildAnomaly(call, missing);
             if (!anomaly) continue;
             context.waitUntil(
-                saveProviderAnomaly(env.DB, { userId, rcNumber: vehicleNumber, endpoint, ...anomaly })
+                saveProviderAnomaly(db, { userId, rcNumber: vehicleNumber, endpoint, ...anomaly })
                     .catch((e) => console.error(`Failed to record provider anomaly for ${endpoint}: ${e.message}`))
             );
         }
@@ -283,22 +285,27 @@ export async function onRequestPost(context) {
         // --------------------------------------------------------------
 
         // Deduct credit (only after a successful lookup)
-        const deducted = await deductCredit(env.DB, { userId, rcNumber: result.rcNumber });
+        const deducted = await deductCredit(db, { userId, rcNumber: result.rcNumber });
         if (!deducted) {
             return jsonResponse({ error: 'Failed to deduct credit' }, 500);
         }
 
-        // Save history
-        await saveLookupHistory(env.DB, {
-            userId,
-            rcNumber: result.rcNumber,
-            mobileNumber: result.mobileNumber,
-            ownerName: result.ownerName,
-            vehicleNumber: result.vehicleNumber,
-            presentAddress: providerAddress || null,
-            pincode: providerPincode || null,
-            creditsDeducted: 1
-        });
+        // Save history off the response path. Nothing in the response depends on
+        // it, and awaiting it held the client for another D1 round trip after the
+        // charge had already gone through. A failed write now only logs — the
+        // lookup itself still succeeded and was still billed exactly once.
+        context.waitUntil(
+            saveLookupHistory(db, {
+                userId,
+                rcNumber: result.rcNumber,
+                mobileNumber: result.mobileNumber,
+                ownerName: result.ownerName,
+                vehicleNumber: result.vehicleNumber,
+                presentAddress: providerAddress || null,
+                pincode: providerPincode || null,
+                creditsDeducted: 1
+            }).catch((e) => console.error(`Failed to save lookup history for ${result.rcNumber}: ${e.message}`))
+        );
 
         const remainingCredits = user.credits - 1;
 

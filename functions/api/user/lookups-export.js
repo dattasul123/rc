@@ -70,7 +70,7 @@ export async function onRequestGet(context) {
             return badRequest('From date is after To date');
         }
 
-        const { results } = await env.DB.prepare(
+        const { results } = await (data.session || env.DB).prepare(
             `SELECT rc_number, owner_name, mobile_number, vehicle_number,
                     present_address, pincode, credits_deducted,
                     date(lookup_date, ${IST}) AS lookup_day,

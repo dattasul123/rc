@@ -1,4 +1,5 @@
 import { verifyJWT } from '../../utils/jwt.js';
+import { openSession, withBookmark } from '../../utils/session.js';
 
 export async function onRequest(context) {
     const { request, env } = context;
@@ -25,5 +26,10 @@ export async function onRequest(context) {
     context.data = context.data || {};
     context.data.user = payload;
 
-    return await context.next();
+    // One D1 session per request, shared by every query the route makes, so the
+    // client keeps a consistent view of its own data across replicas.
+    const session = openSession(context);
+    context.data.session = session;
+
+    return withBookmark(await context.next(), session);
 }
