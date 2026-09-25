@@ -210,7 +210,7 @@ export async function onRequestPost(context) {
             callIdsPay(`${baseUrl}/srv2/validation/rc`, { ...creds, reg_no: vehicleNumber })
         ]);
 
-        // --- Mobile number (required) ---
+        // --- Mobile number evaluation ---
         const mobileStatus = String(mobileCall?.json?.status?.type || '').trim().toLowerCase();
         const providerMobile = String(readProviderMobile(mobileCall?.json?.data)).trim();
         const providerMobileDigits = providerMobile.replace(/\D/g, '');
@@ -219,6 +219,11 @@ export async function onRequestPost(context) {
             : providerMobileDigits;
         const mobileMasked = Boolean(providerMobile)
             && (/[xX*]/.test(providerMobile) || !/^\d{10}$/.test(normalizedMobile));
+        const hasValidMobile = Boolean(mobileCall?.ok)
+            && mobileStatus === 'success'
+            && Boolean(providerMobile)
+            && !mobileMasked
+            && /^\d{10}$/.test(normalizedMobile);
 
         // --- Owner name + address (best-effort, from RC Advance V2) ---
         const advanceData = advanceCall?.json?.data;
@@ -227,6 +232,7 @@ export async function onRequestPost(context) {
         const providerName = advanceOk ? readProviderName(advanceData) : '';
         const providerAddress = advanceOk ? readProviderAddress(advanceData) : '';
         const providerPincode = advanceOk ? readProviderPincode(advanceData, providerAddress) : '';
+        const hasAdvanceDetails = advanceOk && Boolean(providerName || providerAddress);
 
         // --- Observability: store anomalous provider behavior before any early
         // return, so failed lookups are captured too. waitUntil keeps it off the
@@ -262,14 +268,19 @@ export async function onRequestPost(context) {
             console.warn(`RC Advance V2 call failed for ${vehicleNumber}: HTTP ${advanceCall?.status || 0}`, advanceCall?.error || advanceCall?.text?.slice(0, 200));
         }
 
-        if (!mobileCall?.ok || mobileStatus !== 'success') {
-            console.error(`RC to Mobile failure for ${vehicleNumber}:`, {
-                ok: mobileCall?.ok,
-                status: mobileCall?.status,
-                error: mobileCall?.error,
-                providerStatus: mobileCall?.json?.status,
-                responseSnippet: mobileCall?.text?.slice(0, 300)
+        // If NEITHER mobile nor advance vehicle details are found, the vehicle doesn't exist
+        if (!hasValidMobile && !hasAdvanceDetails) {
+            console.error(`RC lookup failure for ${vehicleNumber}: neither mobile nor vehicle details found`, {
+                mobileCall: { ok: mobileCall?.ok, status: mobileCall?.status, error: mobileCall?.error },
+                advanceCall: { ok: advanceCall?.ok, status: advanceCall?.status, error: advanceCall?.error }
             });
+
+            if (mobileMasked) {
+                return jsonResponse({
+                    success: false,
+                    message: 'Provider returned masked/sample data. Confirm the production API credentials and endpoint are active.'
+                }, 502);
+            }
 
             let message = mobileCall?.json?.message || mobileCall?.json?.status?.message;
             if (!message) {
@@ -279,14 +290,16 @@ export async function onRequestPost(context) {
                 }
             }
 
-            if (!message) {
-                if (mobileCall?.error) {
+            if (/rc to mobile lookup failed/i.test(message || '')) {
+                message = 'No records found for this vehicle registration number.';
+            } else if (!message) {
+                if (mobileCall?.error && advanceCall?.error) {
                     message = `RC lookup connection error: ${mobileCall.error}`;
                 } else if (mobileCall?.status) {
                     const snippet = (mobileCall?.text || '').replace(/<[^>]*>/g, '').trim().slice(0, 100);
                     message = `IDSPay returned HTTP ${mobileCall.status}${snippet ? ` (${snippet})` : ''}`;
                 } else {
-                    message = 'RC to Mobile lookup failed';
+                    message = 'Vehicle lookup was unsuccessful. Please check the RC number.';
                 }
             }
 
@@ -298,28 +311,18 @@ export async function onRequestPost(context) {
             }, 502);
         }
 
-        if (!providerMobile) {
-            return jsonResponse({
-                success: false,
-                message: 'Provider reported success but did not return a mobile number'
-            }, 502);
-        }
-
-        if (mobileMasked) {
-            console.error('IDSPay returned a non-production or masked mobile number response');
-            return jsonResponse({
-                success: false,
-                message: 'Provider returned masked/sample data. Confirm the production API credentials and endpoint are active.'
-            }, 502);
+        if (!hasValidMobile) {
+            console.log(`RC lookup for ${vehicleNumber}: Mobile not found in RTO database, returning partial result with vehicle details`);
         }
 
         const result = {
-            mobileNumber: normalizedMobile,
+            mobileNumber: hasValidMobile ? normalizedMobile : 'Not Available',
             ownerName: providerName || 'N/A',
             address: providerAddress || 'N/A',
             pincode: providerPincode || 'N/A',
             vehicleNumber,
-            rcNumber: vehicleNumber
+            rcNumber: vehicleNumber,
+            partial: !hasValidMobile
         };
         // --------------------------------------------------------------
 
