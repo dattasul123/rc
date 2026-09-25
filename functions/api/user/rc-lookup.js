@@ -32,9 +32,13 @@ async function callIdsPay(url, body) {
         } catch {
             json = {};
         }
-        return { ok: resp.ok, status: resp.status, json, text };
-    } catch {
-        return { ok: false, status: 0, json: {}, text: '' };
+        if (!resp.ok) {
+            console.error(`IDSPay call to ${url} failed with HTTP ${resp.status}: ${text.slice(0, 300)}`);
+        }
+        return { ok: resp.ok, status: resp.status, json, text, error: null };
+    } catch (err) {
+        console.error(`IDSPay call to ${url} failed with network error: ${err?.message || err}`);
+        return { ok: false, status: 0, json: {}, text: '', error: err?.message || 'Network error' };
     }
 }
 
@@ -63,9 +67,9 @@ function buildAnomaly(call, missingFields) {
         providerStatusType: call?.json?.status?.type ?? null,
         providerErrorCode: nestedError && nestedError.code !== undefined ? String(nestedError.code) : null,
         providerErrorMessage: (nestedError && nestedError.message)
-            || (failed ? (call?.json?.message || call?.json?.status?.message || null) : null),
+            || (failed ? (call?.json?.message || call?.json?.status?.message || call?.error || null) : null),
         missingFields: missingFields.length > 0 ? missingFields.join(',') : null,
-        rawResponse: (call?.text || '').slice(0, RAW_RESPONSE_LIMIT) || null
+        rawResponse: (call?.text || call?.error || '').slice(0, RAW_RESPONSE_LIMIT) || null
     };
 }
 
@@ -254,9 +258,44 @@ export async function onRequestPost(context) {
         }
         // --------------------------------------------------------------
 
+        if (!advanceCall?.ok) {
+            console.warn(`RC Advance V2 call failed for ${vehicleNumber}: HTTP ${advanceCall?.status || 0}`, advanceCall?.error || advanceCall?.text?.slice(0, 200));
+        }
+
         if (!mobileCall?.ok || mobileStatus !== 'success') {
-            const message = mobileCall?.json?.message || mobileCall?.json?.status?.message || 'RC to Mobile lookup failed';
-            return jsonResponse({ success: false, message }, 502);
+            console.error(`RC to Mobile failure for ${vehicleNumber}:`, {
+                ok: mobileCall?.ok,
+                status: mobileCall?.status,
+                error: mobileCall?.error,
+                providerStatus: mobileCall?.json?.status,
+                responseSnippet: mobileCall?.text?.slice(0, 300)
+            });
+
+            let message = mobileCall?.json?.message || mobileCall?.json?.status?.message;
+            if (!message) {
+                const nested = mobileCall?.json?.data?.errors ?? mobileCall?.json?.errors;
+                if (nested && typeof nested === 'object') {
+                    message = nested.message || (nested.code ? `Provider error: ${nested.code}` : null);
+                }
+            }
+
+            if (!message) {
+                if (mobileCall?.error) {
+                    message = `RC lookup connection error: ${mobileCall.error}`;
+                } else if (mobileCall?.status) {
+                    const snippet = (mobileCall?.text || '').replace(/<[^>]*>/g, '').trim().slice(0, 100);
+                    message = `IDSPay returned HTTP ${mobileCall.status}${snippet ? ` (${snippet})` : ''}`;
+                } else {
+                    message = 'RC to Mobile lookup failed';
+                }
+            }
+
+            return jsonResponse({
+                success: false,
+                message,
+                status: mobileCall?.status ?? 0,
+                errorType: mobileCall?.error ? 'network_error' : (!mobileCall?.ok ? 'http_error' : 'provider_rejected')
+            }, 502);
         }
 
         if (!providerMobile) {
