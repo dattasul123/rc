@@ -118,7 +118,7 @@ export default function Dashboard() {
     const historyRowFor = (result) => ({
         id: `pending-${Date.now()}`,
         rc_number: result.rcNumber,
-        mobile_number: result.mobileNumber,
+        mobile_number: result.mobileNumber === 'Not Available' ? null : result.mobileNumber,
         owner_name: result.ownerName === 'N/A' ? null : result.ownerName,
         vehicle_number: result.vehicleNumber,
         present_address: result.address === 'N/A' ? null : result.address,
@@ -264,7 +264,14 @@ export default function Dashboard() {
                     {lookupResult && (
                         <div className="glass-panel p-5 sm:p-6 border-indigo-500/30 bg-indigo-500/5 animate-in">
                             <div className="flex items-center justify-between mb-4">
-                                <h3 className="text-lg font-medium text-white">Lookup Result</h3>
+                                <div className="flex items-center gap-2">
+                                    <h3 className="text-lg font-medium text-white">Lookup Result</h3>
+                                    {lookupResult.data.partial && (
+                                        <span className="text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full">
+                                            No Mobile Linked in RTO
+                                        </span>
+                                    )}
+                                </div>
                                 {lookupResult.cached && (
                                     <span className="text-xs font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">Cached · Free</span>
                                 )}
@@ -276,7 +283,9 @@ export default function Dashboard() {
                                 </div>
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Mobile Number</p>
-                                    <p className="text-xl font-bold text-green-400">{lookupResult.data.mobileNumber}</p>
+                                    <p className={`text-xl font-bold ${lookupResult.data.mobileNumber === 'Not Available' ? 'text-amber-400 text-base' : 'text-green-400'}`}>
+                                        {lookupResult.data.mobileNumber}
+                                    </p>
                                 </div>
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg col-span-2">
                                     <p className="text-slate-400 text-sm">Address</p>
@@ -361,7 +370,9 @@ export default function Dashboard() {
                                         {item.owner_name && (
                                             <div className="text-sm text-slate-300 font-medium">{item.owner_name}</div>
                                         )}
-                                        <div className="text-sm font-bold text-green-400 my-0.5">{item.mobile_number}</div>
+                                        <div className={`text-sm font-bold ${item.mobile_number ? 'text-green-400' : 'text-slate-500 text-xs'} my-0.5`}>
+                                            {item.mobile_number || 'Mobile not registered'}
+                                        </div>
                                         {item.present_address && (
                                             <div className="text-xs text-slate-400 line-clamp-2 mt-1" title={item.present_address}>{item.present_address}</div>
                                         )}
