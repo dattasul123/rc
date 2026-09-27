@@ -82,6 +82,51 @@ const PLANS = [
     }
 ];
 
+// --- Column coverage -------------------------------------------------------
+
+// A lookup can now come back partial (see "Allow partial lookup results when
+// mobile is not registered in RTO"), so a client's row count no longer says
+// which fields they actually got. These drive the Coverage tab, which does.
+
+// Sequential single-hue ramp: one indigo, darkest = rarest, lightest = almost
+// always present. Checked against this panel's slate-900 surface — every step
+// clears 2:1 on it, the lightness gaps are visible, and the hue spread is 4
+// degrees so it reads as one scale and not as five categories. `ink` is the
+// text colour that clears 4.5:1 on that step; every cell prints its percentage,
+// so the colour is a second signal and never the only one.
+const COVERAGE_RAMP = [
+    { min: 0, label: 'under 20%', fill: '#4338ca', ink: '#ffffff' },
+    { min: 20, label: '20-39%', fill: '#5d57e2', ink: '#ffffff' },
+    { min: 40, label: '40-59%', fill: '#7b79f2', ink: '#1e1b4b' },
+    { min: 60, label: '60-79%', fill: '#9aa1f9', ink: '#1e1b4b' },
+    { min: 80, label: '80-100%', fill: '#c3cbfd', ink: '#1e1b4b' }
+];
+
+// The headline bars are one series, so they are one colour — bar length already
+// carries the magnitude, and re-encoding it as hue would read as five categories.
+// The ramp above is for the matrix, where there is no length to read.
+const COVERAGE_BAR = '#818cf8';
+
+// 0% is not the bottom of the scale, it is a different fact — this column never
+// arrives for this client — so it gets a neutral swatch that stays off the ramp.
+const COVERAGE_ZERO = { fill: 'rgba(148, 163, 184, 0.10)', ink: '#64748b' };
+
+function coverageStep(pct) {
+    if (pct === null || pct <= 0) return COVERAGE_ZERO;
+    // Highest matching floor wins, so walk down.
+    for (let i = COVERAGE_RAMP.length - 1; i >= 0; i--) {
+        if (pct >= COVERAGE_RAMP[i].min) return COVERAGE_RAMP[i];
+    }
+    return COVERAGE_RAMP[0];
+}
+
+// null, not 0, when there is nothing to divide by: a client with no lookups has
+// no fill rate rather than a rate of zero, and the two must not colour alike.
+// Not named *coverage*: the Wallet tab already owns `coveragePct` for how much
+// outstanding credit the provider balance can honour.
+const fillRate = (filled, total) => (total > 0 ? (filled / total) * 100 : null);
+const formatRate = (pct) => (pct === null ? '—' : `${Math.round(pct)}%`);
+
 export default function AdminPanel() {
     const { logout, user: currentUser } = useAuth();
     const navigate = useNavigate();
@@ -130,6 +175,12 @@ export default function AdminPanel() {
     // — an export failure has to be visible in the tab the button lives in.
     const [lookupError, setLookupError] = useState('');
 
+    const [coverage, setCoverage] = useState(null);
+    const [coverageSearch, setCoverageSearch] = useState('');
+    // Without this the tab sits on "Loading" forever when the fetch fails,
+    // which reads as "no data yet" rather than "this is broken".
+    const [coverageError, setCoverageError] = useState('');
+
     const [premiumThreshold, setPremiumThreshold] = useState(0);
     const [premiumInput, setPremiumInput] = useState('0');
     const [savingPremium, setSavingPremium] = useState(false);
@@ -150,12 +201,13 @@ export default function AdminPanel() {
 
     const fetchData = async () => {
         try {
-            const [usersRes, transRes, walletRes, settingsRes, lookupsRes] = await Promise.all([
+            const [usersRes, transRes, walletRes, settingsRes, lookupsRes, coverageRes] = await Promise.all([
                 fetch('/api/admin/users', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
                 fetch('/api/admin/transactions', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
                 fetch('/api/admin/provider-wallet', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
                 fetch('/api/admin/settings', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
-                fetch('/api/admin/lookups', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
+                fetch('/api/admin/lookups', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
+                fetch('/api/admin/column-coverage', { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } })
             ]);
 
             if (usersRes.ok) setUsers((await usersRes.json()).users);
@@ -165,6 +217,15 @@ export default function AdminPanel() {
             // Parsing that would throw and take settings and wallet down with it.
             if (lookupsRes.ok && (lookupsRes.headers.get('Content-Type') || '').includes('application/json')) {
                 setLookupGroups((await lookupsRes.json()).users);
+            }
+            // Same guard: on a deployment that predates this function the SPA's
+            // index.html comes back with a 200, and parsing it would throw.
+            if (coverageRes.ok && (coverageRes.headers.get('Content-Type') || '').includes('application/json')) {
+                setCoverage(await coverageRes.json());
+                setCoverageError('');
+            } else {
+                const body = await coverageRes.json().catch(() => ({}));
+                setCoverageError(body.error || 'Could not load column coverage.');
             }
             if (settingsRes.ok) {
                 const s = await settingsRes.json();
@@ -184,6 +245,7 @@ export default function AdminPanel() {
             }
         } catch (err) {
             console.error('Failed to fetch admin data', err);
+            setCoverageError('Could not load column coverage.');
             setProviderWallet({
                 configured: true,
                 available: false,
@@ -509,6 +571,23 @@ export default function AdminPanel() {
         return lookupGroups.filter(g =>
             (g.full_name || '').toLowerCase().includes(term) ||
             (g.email || '').toLowerCase().includes(term)
+        );
+    })();
+
+    // --- Column coverage ------------------------------------------------------
+    // Ranked most-common first: the question the tab answers is which columns we
+    // can rely on, and that ordering is the answer, read top to bottom.
+    const rankedCoverageColumns = (coverage?.columns || [])
+        .map(c => ({ ...c, pct: fillRate(c.filled, c.total) }))
+        .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
+
+    const visibleCoverageClients = (() => {
+        const rows = coverage?.clients || [];
+        const term = coverageSearch.trim().toLowerCase();
+        if (!term) return rows;
+        return rows.filter(c =>
+            (c.full_name || '').toLowerCase().includes(term) ||
+            (c.email || '').toLowerCase().includes(term)
         );
     })();
 
@@ -1013,6 +1092,7 @@ export default function AdminPanel() {
                             {[
                                 { id: 'users', label: 'Users' },
                                 { id: 'lookups', label: 'Lookups' },
+                                { id: 'coverage', label: 'Coverage' },
                                 { id: 'transactions', label: 'Transactions' },
                                 { id: 'calculator', label: 'Plans' },
                                 { id: 'wallet', label: 'Wallet' }
@@ -1202,6 +1282,147 @@ export default function AdminPanel() {
                                                 })}
                                             </tbody>
                                         </table>
+                                    )}
+                                </div>
+                            ) : activeTab === 'coverage' ? (
+                                <div className="space-y-5">
+                                    <div>
+                                        <h3 className="text-lg font-bold text-white">Column coverage</h3>
+                                        <p className="text-xs text-slate-400 mt-0.5">
+                                            How often each field actually comes back filled, not just how many
+                                            lookups ran. RC number is the input, so it is always present and left out.
+                                        </p>
+                                    </div>
+
+                                    {coverageError ? (
+                                        <div className="p-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/50">
+                                            {coverageError}
+                                        </div>
+                                    ) : !coverage ? (
+                                        <p className="text-sm text-slate-400 py-6 text-center">Loading coverage…</p>
+                                    ) : coverage.total_lookups === 0 ? (
+                                        <p className="text-sm text-slate-400 py-6 text-center">No lookups yet, so there is nothing to measure.</p>
+                                    ) : (
+                                        <>
+                                            {/* The headline, ranked most common first: read top to bottom,
+                                                this is the order of which columns can be relied on. */}
+                                            <div className="space-y-4">
+                                                <p className="text-xs text-slate-400">
+                                                    Across all {coverage.total_lookups.toLocaleString('en-IN')} lookups
+                                                    from {coverage.clients_with_data} of {coverage.client_count} clients
+                                                </p>
+                                                {rankedCoverageColumns.map(c => (
+                                                    <div key={c.key}>
+                                                        <div className="flex items-baseline justify-between gap-3 mb-1">
+                                                            <span className="text-sm text-slate-200">{c.label}</span>
+                                                            <span className="text-sm font-semibold text-white tabular-nums">{formatRate(c.pct)}</span>
+                                                        </div>
+                                                        {/* Square at the origin, rounded at the data end. */}
+                                                        <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                                                            <div
+                                                                className="h-full rounded-r-[4px]"
+                                                                style={{
+                                                                    width: `${c.pct ?? 0}%`,
+                                                                    // A rate too small to draw still has to be visible.
+                                                                    minWidth: c.filled > 0 ? '3px' : 0,
+                                                                    backgroundColor: COVERAGE_BAR
+                                                                }}
+                                                            />
+                                                        </div>
+                                                        <div className="text-[11px] text-slate-400 mt-1">
+                                                            {c.filled.toLocaleString('en-IN')} of {c.total.toLocaleString('en-IN')} lookups
+                                                            {' \u00b7 '}reaches {c.clients_any} of {coverage.clients_with_data} clients
+                                                            {c.clients_all > 0 ? `, every lookup for ${c.clients_all}` : ''}
+                                                            {c.clients_none > 0 ? `, never for ${c.clients_none}` : ''}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            <div className="pt-2 border-t border-white/10 space-y-3">
+                                                <div className="space-y-2">
+                                                    <h4 className="text-sm font-semibold text-white">Per client</h4>
+                                                    {/* Colour is a second signal here — every cell also prints
+                                                        its number — but the bands still have to be named. */}
+                                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                                                        <span className="flex items-center gap-1">
+                                                            <span className="w-4 h-3 rounded-sm" style={{ backgroundColor: COVERAGE_ZERO.fill }} />
+                                                            never
+                                                        </span>
+                                                        {COVERAGE_RAMP.map(step => (
+                                                            <span key={step.min} className="flex items-center gap-1">
+                                                                <span className="w-4 h-3 rounded-sm" style={{ backgroundColor: step.fill }} />
+                                                                {step.label}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                <input
+                                                    type="text"
+                                                    value={coverageSearch}
+                                                    onChange={(e) => setCoverageSearch(e.target.value)}
+                                                    placeholder="Filter by client name or email"
+                                                    className="input-field text-sm"
+                                                />
+
+                                                {visibleCoverageClients.length === 0 ? (
+                                                    <p className="text-sm text-slate-500 py-6 text-center">No clients match that.</p>
+                                                ) : (
+                                                    <table className="w-full min-w-[640px] text-left text-sm">
+                                                        <thead className="text-slate-400">
+                                                            <tr>
+                                                                <th className="pb-2 pr-3 text-xs font-medium">Client</th>
+                                                                {rankedCoverageColumns.map(c => (
+                                                                    <th key={c.key} className="pb-2 px-[1px] text-center text-xs font-medium whitespace-nowrap">
+                                                                        {c.label}
+                                                                    </th>
+                                                                ))}
+                                                                <th className="pb-2 pl-3 text-right text-xs font-medium">Lookups</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {visibleCoverageClients.map(cl => (
+                                                                <tr key={cl.user_id ?? 'orphaned'}>
+                                                                    <td className="py-[1px] pr-3 align-middle">
+                                                                        <div className="font-medium text-white text-xs truncate max-w-[180px]">{cl.full_name}</div>
+                                                                        <div className="text-slate-500 text-[11px] truncate max-w-[180px]">{cl.email}</div>
+                                                                    </td>
+                                                                    {/* No lookups is not the same as a column that never
+                                                                        arrives, and must not be coloured as if it were. */}
+                                                                    {cl.total === 0 ? (
+                                                                        <td colSpan={rankedCoverageColumns.length} className="p-[1px]">
+                                                                            <div className="rounded py-2 text-center text-[11px] text-slate-500 bg-white/[0.03]">
+                                                                                No lookups yet
+                                                                            </div>
+                                                                        </td>
+                                                                    ) : (
+                                                                        rankedCoverageColumns.map(c => {
+                                                                            const pct = fillRate(cl.filled[c.key], cl.total);
+                                                                            const step = coverageStep(pct);
+                                                                            return (
+                                                                                <td key={c.key} className="p-[1px]">
+                                                                                    <div
+                                                                                        className="rounded py-2 text-center text-xs font-semibold tabular-nums"
+                                                                                        style={{ backgroundColor: step.fill, color: step.ink }}
+                                                                                        title={`${cl.full_name} \u00b7 ${c.label}: ${cl.filled[c.key]} of ${cl.total} lookups`}
+                                                                                    >
+                                                                                        {formatRate(pct)}
+                                                                                    </div>
+                                                                                </td>
+                                                                            );
+                                                                        })
+                                                                    )}
+                                                                    <td className="py-[1px] pl-3 text-right text-xs text-slate-300 tabular-nums">
+                                                                        {cl.total.toLocaleString('en-IN')}
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                )}
+                                            </div>
+                                        </>
                                     )}
                                 </div>
                             ) : activeTab === 'transactions' ? (
