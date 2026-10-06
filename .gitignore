@@ -28,3 +28,6 @@ photo
 *.njsproj
 *.sln
 *.sw?
+
+# Local provider/auth secrets. Never commit.
+.dev.vars

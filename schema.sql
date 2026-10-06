@@ -67,7 +67,7 @@ CREATE TABLE provider_anomalies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     rc_number TEXT NOT NULL,
-    endpoint TEXT NOT NULL,             -- 'srv1/rc-to-mobile' or 'srv2/validation/rc'
+    endpoint TEXT NOT NULL,             -- 'ecuzen/verify/vehicle' or 'srv1/rc-to-mobile'
     http_status INTEGER,                -- HTTP status of the provider response (0 = network failure)
     provider_status_code INTEGER,       -- status.code from the response envelope
     provider_status_type TEXT,          -- status.type ('success' can wrap an error)
