@@ -11,10 +11,21 @@ const parseUtc = (s) => new Date(`${String(s).replace(' ', 'T')}Z`);
 // a lookup under, so the count shown here matches the rows in the CSV.
 const istDay = (date) => date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
+// Selectable lookup upstreams. The ids are what /api/user/rc-lookup expects; the
+// labels are deliberately generic so the provider names stay off the UI.
+const SERVERS = [
+    { id: '1', label: 'Server 1', hint: 'Name, address & mobile' },
+    { id: '2', label: 'Server 2', hint: 'Mobile number only' }
+];
+
 export default function Dashboard() {
     const { user, logout, setCredits } = useAuth();
     const navigate = useNavigate();
     const [rcNumber, setRcNumber] = useState('');
+    // Which upstream answers the lookup. Server 1 (Ecuzen) returns name, address
+    // and mobile; Server 2 (IDSPay) returns the mobile number only. Exactly one is
+    // called per lookup — there is no automatic fallback between them.
+    const [server, setServer] = useState('1');
     const [lookupResult, setLookupResult] = useState(null);
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -140,7 +151,7 @@ export default function Dashboard() {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${localStorage.getItem('token')}`
                 },
-                body: JSON.stringify({ rcNumber })
+                body: JSON.stringify({ rcNumber, server })
             });
             const data = await res.json();
 
@@ -238,18 +249,46 @@ export default function Dashboard() {
                 <div className="md:col-span-2 space-y-4 sm:space-y-6">
                     <div className="glass-panel p-5 sm:p-8">
                         <h2 className="text-xl sm:text-2xl font-bold text-white mb-4 sm:mb-6 drop-shadow-md">Perform RC Lookup</h2>
-                        <form onSubmit={handleLookup} className="flex flex-col sm:flex-row gap-3">
-                            <input
-                                type="text"
-                                className="input-field flex-1 uppercase"
-                                placeholder="Enter RC Number (e.g. MH01AB1234)"
-                                value={rcNumber}
-                                onChange={(e) => setRcNumber(e.target.value.toUpperCase())}
-                                required
-                            />
-                            <button type="submit" className="btn-primary whitespace-nowrap w-full sm:w-auto" disabled={isLoading || user.credits <= 0}>
-                                {isLoading ? 'Looking up...' : 'Get RC Details'}
-                            </button>
+                        <form onSubmit={handleLookup} className="space-y-3">
+                            <div className="flex flex-col sm:flex-row gap-3">
+                                <input
+                                    type="text"
+                                    className="input-field flex-1 uppercase"
+                                    placeholder="Enter RC Number (e.g. MH01AB1234)"
+                                    value={rcNumber}
+                                    onChange={(e) => setRcNumber(e.target.value.toUpperCase())}
+                                    required
+                                />
+                                <button type="submit" className="btn-primary whitespace-nowrap w-full sm:w-auto" disabled={isLoading || user.credits <= 0}>
+                                    {isLoading ? 'Looking up...' : 'Get RC Details'}
+                                </button>
+                            </div>
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+                                <span className="text-sm text-slate-400">Server</span>
+                                <div className="flex gap-2" role="radiogroup" aria-label="Lookup server">
+                                    {SERVERS.map((option) => (
+                                        <button
+                                            key={option.id}
+                                            type="button"
+                                            role="radio"
+                                            aria-checked={server === option.id}
+                                            title={option.hint}
+                                            onClick={() => setServer(option.id)}
+                                            disabled={isLoading}
+                                            className={`text-sm px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                                                server === option.id
+                                                    ? 'bg-indigo-500/20 border-indigo-400/60 text-white font-semibold'
+                                                    : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                                            }`}
+                                        >
+                                            {option.label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <span className="text-xs text-slate-400 sm:ml-1">
+                                    {SERVERS.find((option) => option.id === server)?.hint}
+                                </span>
+                            </div>
                         </form>
                         {user.credits <= 0 && (
                             <p className="text-red-300 font-semibold text-base mt-4 bg-red-950/40 p-3 rounded-lg border border-red-500/30 inline-block">You don't have enough credits to perform a lookup.</p>
@@ -266,6 +305,11 @@ export default function Dashboard() {
                             <div className="flex items-center justify-between mb-4">
                                 <div className="flex items-center gap-2">
                                     <h3 className="text-lg font-medium text-white">Lookup Result</h3>
+                                    {lookupResult.data.serverLabel && (
+                                        <span className="text-xs font-semibold text-slate-300 bg-white/5 border border-white/15 px-2.5 py-0.5 rounded-full">
+                                            {lookupResult.data.serverLabel}
+                                        </span>
+                                    )}
                                     {lookupResult.data.partial && (
                                         <span className="text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full">
                                             No Mobile Linked in RTO

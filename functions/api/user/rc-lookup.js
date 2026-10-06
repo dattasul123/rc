@@ -5,14 +5,21 @@ import {
     saveProviderAnomaly
 } from '../../utils/db.js';
 
-// Primary provider: Ecuzen Vehicle Verification. One call returns owner name,
-// mobile number and both addresses, so it replaces the pair of IDSPay endpoints
-// (RC To Mobile + RC Advance V2) that used to be chained for the same data.
+// The client picks which upstream answers the lookup. Exactly one is called —
+// there is deliberately no cross-server fallback, so a lookup always returns what
+// the chosen server said and users can retry on the other one themselves.
+//
+//   Server 1 (default) — Ecuzen: one call returns owner name, mobile and addresses.
+//   Server 2           — IDSPay RC To Mobile: returns a mobile number and nothing
+//                        else, so name/address come back as N/A.
+const SERVER_ECUZEN = '1';
+const SERVER_IDSPAY = '2';
+const DEFAULT_SERVER = SERVER_ECUZEN;
+const SERVER_LABELS = { [SERVER_ECUZEN]: 'Server 1', [SERVER_IDSPAY]: 'Server 2' };
+
 const DEFAULT_ECUZEN_BASE_URL = 'https://xapi.ecuzen.in';
 const ECUZEN_ENDPOINT = '/api/verify/vehicle';
 
-// Backup provider: IDSPay RC To Mobile, called only when Ecuzen does not hand
-// back a usable mobile number. It answers with a number and nothing else.
 const DEFAULT_IDSPAY_BASE_URL = 'https://javabackend.idspay.in/api/v1/prod';
 const REQUIRED_IDSPAY_ENV = ['IDSPAY_API_ID', 'IDSPAY_API_KEY', 'IDSPAY_TOKEN_ID'];
 
@@ -240,7 +247,10 @@ export async function onRequestPost(context) {
         // Reads and writes share the request's session (primary-first for a POST),
         // so the bookmark returned to the client already covers this lookup.
         const db = data.session || env.DB;
-        const { rcNumber } = await request.json();
+        const { rcNumber, server } = await request.json();
+        // Anything unrecognized falls back to the default rather than erroring —
+        // an older client that sends no server at all still works.
+        const selectedServer = server === SERVER_IDSPAY ? SERVER_IDSPAY : DEFAULT_SERVER;
         // Canonicalize to bare alphanumerics (uppercase). Users type spaces/hyphens
         // ("HR 26 EZ 2802"); the providers reject those. Both accept the compact form.
         const vehicleNumber = String(rcNumber || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -268,27 +278,27 @@ export async function onRequestPost(context) {
         // Every lookup queries the provider live — there is no result cache.
         // (A shared cache previously served stale data from superseded endpoints.)
 
-        // Ecuzen is the primary and IDSPay is only the backup, so each is used on
-        // its own if the other is unconfigured; only a total absence is fatal.
-        const ecuzenConfigured = Boolean(env.ECUZEN_API_KEY);
-        const idsPayConfigured = REQUIRED_IDSPAY_ENV.every((key) => Boolean(env[key]));
-        if (!ecuzenConfigured && !idsPayConfigured) {
-            console.error('No RC lookup provider configured: set ECUZEN_API_KEY (primary) and/or the IDSPAY_* secrets (backup)');
-            return jsonResponse({ success: false, message: 'RC lookup provider is not configured' }, 500);
-        }
-        if (!ecuzenConfigured) {
-            console.warn('ECUZEN_API_KEY is not set — running on the IDSPay backup alone, so no owner name or address will be returned');
+        // Only the selected server is contacted, so only its credentials matter.
+        const usingEcuzen = selectedServer === SERVER_ECUZEN;
+        const serverLabel = SERVER_LABELS[selectedServer];
+        const configured = usingEcuzen
+            ? Boolean(env.ECUZEN_API_KEY)
+            : REQUIRED_IDSPAY_ENV.every((key) => Boolean(env[key]));
+        if (!configured) {
+            console.error(`${serverLabel} is not configured: set ${usingEcuzen ? 'ECUZEN_API_KEY' : REQUIRED_IDSPAY_ENV.join(', ')}`);
+            return jsonResponse({
+                success: false,
+                message: `${serverLabel} is not configured. Try the other server.`
+            }, 503);
         }
 
-        // --- Primary: Ecuzen vehicle verification -------------------------------
-        // One POST returns name, mobile and addresses together. Unlike the old
-        // two-endpoint chain it is billed on every lookup, including ones that come
-        // back without a mobile and are therefore never charged to the client — the
-        // cost of getting all three fields from a single round trip.
-        const ecuzenUrl = `${(env.ECUZEN_BASE_URL || DEFAULT_ECUZEN_BASE_URL).replace(/\/+$/, '')}${ECUZEN_ENDPOINT}`;
-        const vehicleCall = ecuzenConfigured
+        // --- Server 1: Ecuzen vehicle verification ------------------------------
+        // One POST returns name, mobile and addresses together. It is billed on
+        // every lookup, including ones that come back without a mobile and are
+        // therefore never charged to the client.
+        const vehicleCall = usingEcuzen
             ? await postJson(
-                ecuzenUrl,
+                `${(env.ECUZEN_BASE_URL || DEFAULT_ECUZEN_BASE_URL).replace(/\/+$/, '')}${ECUZEN_ENDPOINT}`,
                 { vehicle_number: vehicleNumber, txnid: buildTxnId() },
                 { 'api-key': env.ECUZEN_API_KEY }
             )
@@ -296,19 +306,18 @@ export async function onRequestPost(context) {
         const vehicleOk = ecuzenSucceeded(vehicleCall);
         const vehicleData = vehicleOk ? vehicleCall.json : null;
 
+        // Only Server 1 carries owner details; Server 2 leaves them empty, which
+        // surfaces as "N/A" in the result below.
         const providerName = vehicleOk ? readProviderName(vehicleData) : '';
         const providerAddress = vehicleOk ? readProviderAddress(vehicleData) : '';
         const providerPincode = vehicleOk ? readProviderPincode(vehicleData, providerAddress) : '';
-        const ecuzenMobile = evaluateMobile(vehicleOk ? readProviderMobile(vehicleData) : '');
 
-        // --- Backup: IDSPay RC To Mobile ---------------------------------------
-        // Reached only when Ecuzen produced no usable number — whether it failed
-        // outright or answered with owner_mobile_number null/masked. It adds a
-        // mobile to whatever name and address Ecuzen already gave us.
-        // null, not a failed call: it means we deliberately never asked, and
-        // everything downstream has to tell those two apart.
-        const mobileCall = !ecuzenMobile.valid && idsPayConfigured
-            ? await postJson(
+        // --- Server 2: IDSPay RC To Mobile --------------------------------------
+        // Answers with a mobile number alone. null, not a failed call: it means we
+        // deliberately never asked, and everything downstream tells those apart.
+        const mobileCall = usingEcuzen
+            ? null
+            : await postJson(
                 `${(env.IDSPAY_BASE_URL || DEFAULT_IDSPAY_BASE_URL).replace(/\/+$/, '')}/srv1/rc-to-mobile`,
                 {
                     api_id: env.IDSPAY_API_ID,
@@ -316,23 +325,20 @@ export async function onRequestPost(context) {
                     token_id: env.IDSPAY_TOKEN_ID,
                     vehicle_num: vehicleNumber
                 }
-            )
-            : null;
-        const backupMobile = mobileCall
-            ? evaluateMobile(idsPaySucceeded(mobileCall) ? readProviderMobile(mobileCall.json?.data) : '')
-            : null;
+            );
 
-        const mobile = ecuzenMobile.valid ? ecuzenMobile : (backupMobile || ecuzenMobile);
+        const mobile = usingEcuzen
+            ? evaluateMobile(vehicleOk ? readProviderMobile(vehicleData) : '')
+            : evaluateMobile(idsPaySucceeded(mobileCall) ? readProviderMobile(mobileCall.json?.data) : '');
         const hasValidMobile = mobile.valid;
-        const mobileSource = ecuzenMobile.valid ? 'ecuzen' : (backupMobile?.valid ? 'idspay-rc-to-mobile' : null);
 
         // --- Observability: store anomalous provider behavior before any early
         // return, so failed lookups are captured too. waitUntil keeps it off the
         // response path; a failed write only logs.
         const vehicleMissing = [];
         if (vehicleOk) {
-            if (!ecuzenMobile.providerMobile) vehicleMissing.push('owner_mobile_number');
-            else if (ecuzenMobile.masked) vehicleMissing.push('owner_mobile_number(masked)');
+            if (!mobile.providerMobile) vehicleMissing.push('owner_mobile_number');
+            else if (mobile.masked) vehicleMissing.push('owner_mobile_number(masked)');
             if (!providerName) vehicleMissing.push('owner_name');
             if (!providerAddress) vehicleMissing.push('complete_address');
             // An address like ", 560046" (digits/punctuation only, no locality
@@ -341,17 +347,17 @@ export async function onRequestPost(context) {
             if (!providerPincode) vehicleMissing.push('pincode');
         }
 
-        const backupMissing = [];
-        if (backupMobile) {
-            if (!backupMobile.providerMobile) backupMissing.push('mobileNo');
-            else if (backupMobile.masked) backupMissing.push('mobileNo(masked)');
+        const mobileMissing = [];
+        if (mobileCall && idsPaySucceeded(mobileCall)) {
+            if (!mobile.providerMobile) mobileMissing.push('mobileNo');
+            else if (mobile.masked) mobileMissing.push('mobileNo(masked)');
         }
 
-        // A provider that was never called has nothing to say about itself, so it
-        // is left out rather than recorded as a transport failure.
+        // The server that was not selected was never called, so it has nothing to
+        // say about itself and is left out rather than recorded as a failure.
         const auditable = [];
         if (vehicleCall) auditable.push(['ecuzen/verify/vehicle', vehicleCall, vehicleMissing, vehicleOk]);
-        if (mobileCall) auditable.push(['srv1/rc-to-mobile', mobileCall, backupMissing, idsPaySucceeded(mobileCall)]);
+        if (mobileCall) auditable.push(['srv1/rc-to-mobile', mobileCall, mobileMissing, idsPaySucceeded(mobileCall)]);
 
         for (const [endpoint, call, missing, succeeded] of auditable) {
             const anomaly = buildAnomaly(call, missing, succeeded);
@@ -363,41 +369,44 @@ export async function onRequestPost(context) {
         }
         // --------------------------------------------------------------
 
-        if (vehicleCall && !vehicleCall.ok) {
-            console.warn(`Ecuzen call failed for ${vehicleNumber}: HTTP ${vehicleCall.status || 0}`, vehicleCall.error || vehicleCall.text?.slice(0, 200));
-        }
-        if (mobileCall && !mobileCall.ok) {
-            console.warn(`RC To Mobile backup failed for ${vehicleNumber}: HTTP ${mobileCall.status || 0}`, mobileCall.error || mobileCall.text?.slice(0, 200));
+        // The one call that was actually made, for logging and error reporting.
+        const providerCall = usingEcuzen ? vehicleCall : mobileCall;
+        const providerSucceeded = usingEcuzen ? vehicleOk : idsPaySucceeded(mobileCall);
+
+        if (providerCall && !providerCall.ok) {
+            console.warn(`${serverLabel} call failed for ${vehicleNumber}: HTTP ${providerCall.status || 0}`, providerCall.error || providerCall.text?.slice(0, 200));
         }
 
-        // No usable mobile from either provider ends the lookup here, unbilled —
-        // even when Ecuzen did return a name and address.
+        // No usable mobile ends the lookup here, unbilled — even when Server 1 did
+        // return a name and address. There is no fallback to the other server: the
+        // user chose this one and can retry on the other.
         if (!hasValidMobile) {
-            console.error(`RC lookup failure for ${vehicleNumber}: no usable mobile from Ecuzen or the RC To Mobile backup`, {
-                ecuzen: { called: Boolean(vehicleCall), ok: vehicleCall?.ok, status: vehicleCall?.status, error: vehicleCall?.error },
-                backup: { called: Boolean(mobileCall), ok: mobileCall?.ok, status: mobileCall?.status, error: mobileCall?.error }
+            console.error(`RC lookup failure for ${vehicleNumber} on ${serverLabel}: no usable mobile`, {
+                ok: providerCall?.ok, status: providerCall?.status, error: providerCall?.error
             });
 
-            if (ecuzenMobile.masked || backupMobile?.masked) {
+            if (mobile.masked) {
                 return jsonResponse({
                     success: false,
                     message: 'Provider returned masked/sample data. Confirm the production API credentials and endpoint are active.'
                 }, 502);
             }
 
-            // Report on the last provider that was actually consulted, preferring
-            // the backup's verdict since it is the one that had the final say.
-            const lastCall = mobileCall || vehicleCall;
-            let message = providerMessage(mobileCall) || providerMessage(vehicleCall);
+            let message = providerMessage(providerCall);
 
             if (/rc to mobile lookup failed/i.test(message) || /no\s*(record|data)/i.test(message)) {
                 message = 'No records found for this vehicle registration number.';
             } else if (!message) {
-                if (lastCall?.error) {
-                    message = `RC lookup connection error: ${lastCall.error}`;
-                } else if (lastCall?.status) {
-                    const snippet = (lastCall?.text || '').replace(/<[^>]*>/g, '').trim().slice(0, 100);
-                    message = `Provider returned HTTP ${lastCall.status}${snippet ? ` (${snippet})` : ''}`;
+                if (providerCall?.error) {
+                    message = `RC lookup connection error: ${providerCall.error}`;
+                } else if (providerSucceeded) {
+                    // The server answered normally; the vehicle simply has no
+                    // number linked to it. Never echo the raw body back here — it
+                    // is a well-formed success payload, not an error to show.
+                    message = 'No mobile number is linked to this vehicle. Try the other server.';
+                } else if (providerCall?.status) {
+                    const snippet = (providerCall?.text || '').replace(/<[^>]*>/g, '').trim().slice(0, 100);
+                    message = `${serverLabel} returned HTTP ${providerCall.status}${snippet ? ` (${snippet})` : ''}`;
                 } else {
                     message = 'Vehicle lookup was unsuccessful. Please check the RC number.';
                 }
@@ -406,8 +415,8 @@ export async function onRequestPost(context) {
             return jsonResponse({
                 success: false,
                 message,
-                status: lastCall?.status ?? 0,
-                errorType: lastCall?.error ? 'network_error' : (!lastCall?.ok ? 'http_error' : 'provider_rejected')
+                status: providerCall?.status ?? 0,
+                errorType: providerCall?.error ? 'network_error' : (!providerCall?.ok ? 'http_error' : 'provider_rejected')
             }, 502);
         }
 
@@ -423,11 +432,10 @@ export async function onRequestPost(context) {
             pincode: providerPincode || 'N/A',
             vehicleNumber,
             rcNumber: vehicleNumber,
-            partial: false
+            partial: false,
+            server: selectedServer,
+            serverLabel
         };
-        if (mobileSource !== 'ecuzen') {
-            console.warn(`RC lookup for ${vehicleNumber} served its mobile from the ${mobileSource} backup`);
-        }
         // --------------------------------------------------------------
 
         // Deduct credit (only after a successful lookup)
