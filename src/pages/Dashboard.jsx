@@ -14,9 +14,12 @@ const istDay = (date) => date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolk
 // Selectable lookup upstreams. The ids are what /api/user/rc-lookup expects; the
 // labels are deliberately generic so the provider names stay off the UI.
 const SERVERS = [
-    { id: '1', label: 'Server 1', hint: 'Name, address & mobile' },
-    { id: '2', label: 'Server 2', hint: 'Mobile number only' }
+    // status drives the badge and whether the option can be picked. Flip Server 1
+    // back to 'active' once the Ecuzen IP whitelist is sorted.
+    { id: '1', label: 'Server 1', hint: 'Name, address & mobile', status: 'maintenance' },
+    { id: '2', label: 'Server 2', hint: 'Name, address & mobile', status: 'active' }
 ];
+const DEFAULT_SERVER_ID = (SERVERS.find((s) => s.status === 'active') || SERVERS[0]).id;
 
 export default function Dashboard() {
     const { user, logout, setCredits } = useAuth();
@@ -25,7 +28,7 @@ export default function Dashboard() {
     // Which upstream answers the lookup. Server 1 (Ecuzen) returns name, address
     // and mobile; Server 2 (IDSPay) returns the mobile number only. Exactly one is
     // called per lookup — there is no automatic fallback between them.
-    const [server, setServer] = useState('1');
+    const [server, setServer] = useState(DEFAULT_SERVER_ID);
     const [lookupResult, setLookupResult] = useState(null);
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -219,10 +222,6 @@ export default function Dashboard() {
 
     if (!user) return null;
 
-    // Server 2 only resolves a mobile number, so the name, address and pincode
-    // cards would all read "N/A". Hide them rather than show empty blocks.
-    const showOwnerDetails = lookupResult?.data?.server !== '2';
-
     return (
         <div className="min-h-screen p-3 sm:p-6 max-w-5xl mx-auto space-y-4 sm:space-y-6">
             <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white/5 backdrop-blur-xl p-4 rounded-xl border border-white/10 shadow-lg">
@@ -270,24 +269,37 @@ export default function Dashboard() {
                             <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                                 <span className="text-sm text-slate-400">Server</span>
                                 <div className="flex gap-2" role="radiogroup" aria-label="Lookup server">
-                                    {SERVERS.map((option) => (
-                                        <button
-                                            key={option.id}
-                                            type="button"
-                                            role="radio"
-                                            aria-checked={server === option.id}
-                                            title={option.hint}
-                                            onClick={() => setServer(option.id)}
-                                            disabled={isLoading}
-                                            className={`text-sm px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
-                                                server === option.id
-                                                    ? 'bg-indigo-500/20 border-indigo-400/60 text-white font-semibold'
-                                                    : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
-                                            }`}
-                                        >
-                                            {option.label}
-                                        </button>
-                                    ))}
+                                    {SERVERS.map((option) => {
+                                        const underMaintenance = option.status === 'maintenance';
+                                        return (
+                                            <button
+                                                key={option.id}
+                                                type="button"
+                                                role="radio"
+                                                aria-checked={server === option.id}
+                                                title={underMaintenance ? 'Temporarily unavailable' : option.hint}
+                                                onClick={() => { if (!underMaintenance) setServer(option.id); }}
+                                                disabled={isLoading || underMaintenance}
+                                                className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+                                                    underMaintenance
+                                                        ? 'bg-white/5 border-white/10 text-slate-500 cursor-not-allowed opacity-60'
+                                                        : server === option.id
+                                                            ? 'bg-indigo-500/20 border-indigo-400/60 text-white font-semibold'
+                                                            : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10 disabled:opacity-50'
+                                                }`}
+                                            >
+                                                {option.label}
+                                                <span className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full ${
+                                                    underMaintenance
+                                                        ? 'text-amber-300 bg-amber-500/10 border border-amber-500/30'
+                                                        : 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/30'
+                                                }`}>
+                                                    <span className={`w-1.5 h-1.5 rounded-full ${underMaintenance ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
+                                                    {underMaintenance ? 'Under Maintenance' : 'Active'}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                                 <span className="text-xs text-slate-400 sm:ml-1">
                                     {SERVERS.find((option) => option.id === server)?.hint}
@@ -325,30 +337,24 @@ export default function Dashboard() {
                                 )}
                             </div>
                             <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                                {showOwnerDetails && (
-                                    <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
-                                        <p className="text-slate-400 text-sm">Name</p>
-                                        <p className="text-lg font-semibold text-white">{lookupResult.data.ownerName}</p>
-                                    </div>
-                                )}
+                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
+                                    <p className="text-slate-400 text-sm">Name</p>
+                                    <p className="text-lg font-semibold text-white">{lookupResult.data.ownerName}</p>
+                                </div>
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Mobile Number</p>
                                     <p className={`text-xl font-bold ${lookupResult.data.mobileNumber === 'Not Available' ? 'text-amber-400 text-base' : 'text-green-400'}`}>
                                         {lookupResult.data.mobileNumber}
                                     </p>
                                 </div>
-                                {showOwnerDetails && (
-                                    <>
-                                        <div className="bg-white/5 border border-white/10 p-4 rounded-lg col-span-2">
-                                            <p className="text-slate-400 text-sm">Address</p>
-                                            <p className="text-base font-semibold text-white">{lookupResult.data.address}</p>
-                                        </div>
-                                        <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
-                                            <p className="text-slate-400 text-sm">Pincode</p>
-                                            <p className="text-lg font-semibold text-white">{lookupResult.data.pincode}</p>
-                                        </div>
-                                    </>
-                                )}
+                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg col-span-2">
+                                    <p className="text-slate-400 text-sm">Address</p>
+                                    <p className="text-base font-semibold text-white">{lookupResult.data.address}</p>
+                                </div>
+                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
+                                    <p className="text-slate-400 text-sm">Pincode</p>
+                                    <p className="text-lg font-semibold text-white">{lookupResult.data.pincode}</p>
+                                </div>
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Credits Remaining</p>
                                     <p className="text-lg font-semibold text-indigo-400">{lookupResult.remainingCredits}</p>

@@ -306,14 +306,8 @@ export async function onRequestPost(context) {
         const vehicleOk = ecuzenSucceeded(vehicleCall);
         const vehicleData = vehicleOk ? vehicleCall.json : null;
 
-        // Only Server 1 carries owner details; Server 2 leaves them empty, which
-        // surfaces as "N/A" in the result below.
-        const providerName = vehicleOk ? readProviderName(vehicleData) : '';
-        const providerAddress = vehicleOk ? readProviderAddress(vehicleData) : '';
-        const providerPincode = vehicleOk ? readProviderPincode(vehicleData, providerAddress) : '';
-
-        // --- Server 2: IDSPay RC To Mobile --------------------------------------
-        // Answers with a mobile number alone. null, not a failed call: it means we
+        // --- Server 2: IDSPay RC To Mobile (first of two IDSPay calls) ----------
+        // Resolves the mobile number. null, not a failed call: it means we
         // deliberately never asked, and everything downstream tells those apart.
         const mobileCall = usingEcuzen
             ? null
@@ -331,6 +325,33 @@ export async function onRequestPost(context) {
             ? evaluateMobile(vehicleOk ? readProviderMobile(vehicleData) : '')
             : evaluateMobile(idsPaySucceeded(mobileCall) ? readProviderMobile(mobileCall.json?.data) : '');
         const hasValidMobile = mobile.valid;
+
+        // --- Server 2: IDSPay RC Advance V2 (second IDSPay call) ----------------
+        // Adds owner name + address, reached only once RC To Mobile produced a
+        // usable number. IDSPay bills each call, and a lookup without a mobile is
+        // never charged to the client, so firing this on a failed lookup would
+        // spend provider credit on a result we give away. null means never asked.
+        const advanceCall = (!usingEcuzen && hasValidMobile)
+            ? await postJson(
+                `${(env.IDSPAY_BASE_URL || DEFAULT_IDSPAY_BASE_URL).replace(/\/+$/, '')}/srv2/validation/rc`,
+                {
+                    api_id: env.IDSPAY_API_ID,
+                    api_key: env.IDSPAY_API_KEY,
+                    token_id: env.IDSPAY_TOKEN_ID,
+                    reg_no: vehicleNumber
+                }
+            )
+            : null;
+        const advanceOk = idsPaySucceeded(advanceCall);
+        const advanceData = advanceOk ? advanceCall.json?.data : null;
+
+        // Owner details come from whichever server answered: Ecuzen's vehicle
+        // payload on Server 1, RC Advance V2's data on Server 2. Both shapes are
+        // handled by the same readProvider* helpers.
+        const ownerSource = usingEcuzen ? vehicleData : advanceData;
+        const providerName = ownerSource ? readProviderName(ownerSource) : '';
+        const providerAddress = ownerSource ? readProviderAddress(ownerSource) : '';
+        const providerPincode = ownerSource ? readProviderPincode(ownerSource, providerAddress) : '';
 
         // --- Observability: store anomalous provider behavior before any early
         // return, so failed lookups are captured too. waitUntil keeps it off the
@@ -353,11 +374,22 @@ export async function onRequestPost(context) {
             else if (mobile.masked) mobileMissing.push('mobileNo(masked)');
         }
 
-        // The server that was not selected was never called, so it has nothing to
-        // say about itself and is left out rather than recorded as a failure.
+        const advanceMissing = [];
+        if (advanceOk) {
+            if (!providerName) advanceMissing.push('owner_name');
+            if (!providerAddress) advanceMissing.push('present_address');
+            // An address like ", 560046" (digits/punctuation only, no locality
+            // text) is effectively missing — seen live, not in the docs.
+            else if (!providerAddress.replace(/[\d\s,.-]/g, '')) advanceMissing.push('present_address(pincode_only)');
+            if (!providerPincode) advanceMissing.push('pincode');
+        }
+
+        // A call that was never made has nothing to say about itself and is left
+        // out rather than recorded as a failure.
         const auditable = [];
         if (vehicleCall) auditable.push(['ecuzen/verify/vehicle', vehicleCall, vehicleMissing, vehicleOk]);
         if (mobileCall) auditable.push(['srv1/rc-to-mobile', mobileCall, mobileMissing, idsPaySucceeded(mobileCall)]);
+        if (advanceCall) auditable.push(['srv2/validation/rc', advanceCall, advanceMissing, advanceOk]);
 
         for (const [endpoint, call, missing, succeeded] of auditable) {
             const anomaly = buildAnomaly(call, missing, succeeded);
@@ -369,12 +401,18 @@ export async function onRequestPost(context) {
         }
         // --------------------------------------------------------------
 
-        // The one call that was actually made, for logging and error reporting.
+        // The call that decides whether the lookup succeeds — the one that resolves
+        // the mobile. On Server 2 that is RC To Mobile; RC Advance only enriches.
         const providerCall = usingEcuzen ? vehicleCall : mobileCall;
         const providerSucceeded = usingEcuzen ? vehicleOk : idsPaySucceeded(mobileCall);
 
         if (providerCall && !providerCall.ok) {
             console.warn(`${serverLabel} call failed for ${vehicleNumber}: HTTP ${providerCall.status || 0}`, providerCall.error || providerCall.text?.slice(0, 200));
+        }
+        // A failed RC Advance does not fail the lookup — the mobile still stands,
+        // and name/address fall back to N/A.
+        if (advanceCall && !advanceCall.ok) {
+            console.warn(`RC Advance V2 call failed for ${vehicleNumber}: HTTP ${advanceCall.status || 0}`, advanceCall.error || advanceCall.text?.slice(0, 200));
         }
 
         // No usable mobile ends the lookup here, unbilled — even when Server 1 did
