@@ -229,3 +229,49 @@ export async function getUserRecovery(db, userId) {
         return db.prepare('SELECT id, email, full_name FROM users WHERE id = ?').bind(userId).first();
     }
 }
+
+// --- Lookup success-rate (per-user estimate) -----------------------------------
+// We only store successful lookups in lookup_history, so there is no exact record
+// of how many attempts failed. This APPROXIMATES the "didn't get a mobile" count
+// from provider_anomalies, which logs a row whenever a provider response was
+// anomalous. It is deliberately a rough estimate (surfaced as such in the UI):
+//
+//   successes = lookup_history rows that ACTUALLY carry a mobile number. A lookup
+//               only counts when a mobile was fetched, so old "partial" rows (saved
+//               with a null mobile when the number was not registered in the RTO)
+//               are excluded — they did not get a number and are failures, not wins.
+//   failures  = anomalies on the MOBILE-resolving endpoints (Ecuzen, or IDSPay RC
+//               To Mobile) that represent no mobile obtained — a transport failure,
+//               a non-success envelope, or a missing/masked mobile. The RC Advance
+//               enrichment endpoint is excluded: it only runs AFTER a mobile is
+//               already in hand, so its anomalies belong to lookups that succeeded.
+//               An old partial lookup logged such an anomaly, so it is counted as a
+//               failure here (once) rather than via its null-mobile history row.
+//
+// It can undercount failures when an anomaly write did not land (best-effort
+// waitUntil), which is acceptable for an estimate.
+export async function getLookupStats(db, userId) {
+    const [successRes, failRes] = await db.batch([
+        db.prepare(
+            `SELECT COUNT(*) AS n FROM lookup_history
+             WHERE user_id = ? AND mobile_number IS NOT NULL AND TRIM(mobile_number) <> ''`
+        ).bind(userId),
+        db.prepare(
+            `SELECT COUNT(*) AS n FROM provider_anomalies
+             WHERE user_id = ?
+               AND endpoint IN ('ecuzen/verify/vehicle', 'srv1/rc-to-mobile')
+               AND (
+                    http_status = 0
+                 OR http_status >= 400
+                 OR (provider_status_type IS NOT NULL AND LOWER(provider_status_type) <> 'success')
+                 OR missing_fields LIKE '%mobile%'
+               )`
+        ).bind(userId)
+    ]);
+    const success = successRes.results?.[0]?.n ?? 0;
+    const failed = failRes.results?.[0]?.n ?? 0;
+    const total = success + failed;
+    // One decimal place; null when there is nothing to rate yet.
+    const rate = total > 0 ? Math.round((success / total) * 1000) / 10 : null;
+    return { success, failed, total, rate, estimated: true };
+}

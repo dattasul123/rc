@@ -119,6 +119,7 @@ function providerMessage(call) {
     const nested = json?.data?.errors ?? json?.errors;
     const candidates = [
         json.message,
+        json.msg,            // Ecuzen puts its error text here (e.g. "Insufficient Fund...")
         json.error,
         typeof json.error === 'object' ? json.error?.message : null,
         json?.status?.message,
@@ -278,14 +279,23 @@ export async function onRequestPost(context) {
         // Every lookup queries the provider live — there is no result cache.
         // (A shared cache previously served stale data from superseded endpoints.)
 
-        // Only the selected server is contacted, so only its credentials matter.
+        // Server 1 can reach Ecuzen two ways. Ecuzen whitelists by IP, and Cloudflare
+        // egress IPs are not stable, so when ECUZEN_RELAY_URL is set we call a small
+        // relay on a box with a fixed (whitelisted) IP instead of calling Ecuzen
+        // directly. In relay mode the Ecuzen api-key lives on the box; this Worker
+        // only holds the shared secret that authenticates it to the relay.
         const usingEcuzen = selectedServer === SERVER_ECUZEN;
+        const useRelay = Boolean(env.ECUZEN_RELAY_URL);
         const serverLabel = SERVER_LABELS[selectedServer];
+        const ecuzenConfigured = useRelay ? Boolean(env.ECUZEN_RELAY_SECRET) : Boolean(env.ECUZEN_API_KEY);
         const configured = usingEcuzen
-            ? Boolean(env.ECUZEN_API_KEY)
+            ? ecuzenConfigured
             : REQUIRED_IDSPAY_ENV.every((key) => Boolean(env[key]));
         if (!configured) {
-            console.error(`${serverLabel} is not configured: set ${usingEcuzen ? 'ECUZEN_API_KEY' : REQUIRED_IDSPAY_ENV.join(', ')}`);
+            const missing = usingEcuzen
+                ? (useRelay ? 'ECUZEN_RELAY_SECRET' : 'ECUZEN_API_KEY')
+                : REQUIRED_IDSPAY_ENV.join(', ');
+            console.error(`${serverLabel} is not configured: set ${missing}`);
             return jsonResponse({
                 success: false,
                 message: `${serverLabel} is not configured. Try the other server.`
@@ -295,13 +305,17 @@ export async function onRequestPost(context) {
         // --- Server 1: Ecuzen vehicle verification ------------------------------
         // One POST returns name, mobile and addresses together. It is billed on
         // every lookup, including ones that come back without a mobile and are
-        // therefore never charged to the client.
+        // therefore never charged to the client. The request body is identical
+        // whether we go direct or through the relay; only the URL and auth header
+        // differ (api-key direct, X-Relay-Secret via the relay).
+        const ecuzenUrl = useRelay
+            ? `${env.ECUZEN_RELAY_URL.replace(/\/+$/, '')}${ECUZEN_ENDPOINT}`
+            : `${(env.ECUZEN_BASE_URL || DEFAULT_ECUZEN_BASE_URL).replace(/\/+$/, '')}${ECUZEN_ENDPOINT}`;
+        const ecuzenHeaders = useRelay
+            ? { 'X-Relay-Secret': env.ECUZEN_RELAY_SECRET }
+            : { 'api-key': env.ECUZEN_API_KEY };
         const vehicleCall = usingEcuzen
-            ? await postJson(
-                `${(env.ECUZEN_BASE_URL || DEFAULT_ECUZEN_BASE_URL).replace(/\/+$/, '')}${ECUZEN_ENDPOINT}`,
-                { vehicle_number: vehicleNumber, txnid: buildTxnId() },
-                { 'api-key': env.ECUZEN_API_KEY }
-            )
+            ? await postJson(ecuzenUrl, { vehicle_number: vehicleNumber, txnid: buildTxnId() }, ecuzenHeaders)
             : null;
         const vehicleOk = ecuzenSucceeded(vehicleCall);
         const vehicleData = vehicleOk ? vehicleCall.json : null;

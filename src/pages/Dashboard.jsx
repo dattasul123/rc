@@ -33,6 +33,7 @@ export default function Dashboard() {
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [history, setHistory] = useState([]);
+    const [stats, setStats] = useState(null);
     
     // Password change state
     const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -56,6 +57,7 @@ export default function Dashboard() {
 
     useEffect(() => {
         fetchHistory();
+        fetchStats();
     }, []);
 
     const fetchHistory = async () => {
@@ -66,6 +68,20 @@ export default function Dashboard() {
             if (res.ok) {
                 const data = await res.json();
                 setHistory(data.history || []);
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
+    const fetchStats = async () => {
+        try {
+            const res = await apiFetch('/api/user/lookup-stats', {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setStats(data.stats || null);
             }
         } catch (err) {
             console.error(err);
@@ -167,6 +183,12 @@ export default function Dashboard() {
                 // re-fetching could even race it and come back without this lookup.
                 if (typeof data.remainingCredits === 'number') setCredits(data.remainingCredits);
                 setHistory((current) => [historyRowFor(data.data), ...current]);
+                setStats((current) => {
+                    const success = (current?.success ?? 0) + 1;
+                    const failed = current?.failed ?? 0;
+                    const total = success + failed;
+                    return { success, failed, total, rate: Math.round((success / total) * 1000) / 10, estimated: true };
+                });
             } else {
                 setError(data.error || data.message || 'Lookup failed');
             }
@@ -364,8 +386,37 @@ export default function Dashboard() {
                     )}
                 </div>
 
-                <div className="md:col-span-1">
-                    <div className="glass-panel p-5 sm:p-8 h-full flex flex-col">
+                <div className="md:col-span-1 flex flex-col gap-4 sm:gap-6">
+                    {stats && stats.total > 0 && (
+                        <div className="glass-panel p-5 sm:p-6">
+                            <div className="flex items-center justify-between mb-3">
+                                <h2 className="text-base font-bold text-white drop-shadow-md">Mobile Success Rate</h2>
+                                <span
+                                    className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 bg-white/5 border border-white/10 px-2 py-0.5 rounded-full"
+                                    title="Estimated from lookup and provider logs"
+                                >
+                                    Est.
+                                </span>
+                            </div>
+                            <div className="flex items-end gap-2">
+                                <span className="text-4xl font-bold text-emerald-400 leading-none">
+                                    {stats.rate != null ? `${stats.rate}%` : '—'}
+                                </span>
+                                <span className="text-xs text-slate-400 mb-1">of {stats.total} lookups</span>
+                            </div>
+                            <div className="mt-3 h-2 w-full rounded-full bg-white/10 overflow-hidden">
+                                <div
+                                    className="h-full bg-emerald-400 rounded-full transition-all"
+                                    style={{ width: `${stats.rate != null ? stats.rate : 0}%` }}
+                                ></div>
+                            </div>
+                            <div className="mt-3 flex items-center justify-between text-xs">
+                                <span className="text-emerald-300">{stats.success} got a number</span>
+                                <span className="text-slate-400">{stats.failed} didn't</span>
+                            </div>
+                        </div>
+                    )}
+                    <div className="glass-panel p-5 sm:p-8 flex-1 flex flex-col">
                         <h2 className="text-xl font-bold text-white drop-shadow-md mb-4">Recent Lookups</h2>
                         <div className="bg-black/20 border border-white/10 rounded-lg p-3 mb-4 sm:mb-6 space-y-2">
                             <div className="grid grid-cols-2 gap-2">
