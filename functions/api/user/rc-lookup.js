@@ -18,7 +18,10 @@ const DEFAULT_SERVER = SERVER_ECUZEN;
 const SERVER_LABELS = { [SERVER_ECUZEN]: 'Server 1', [SERVER_IDSPAY]: 'Server 2' };
 
 const DEFAULT_ECUZEN_BASE_URL = 'https://xapi.ecuzen.in';
-const ECUZEN_ENDPOINT = '/api/verify/vehicle';
+// Ecuzen's working endpoint is /api/verify/rc (confirmed by Ecuzen's own demo).
+// /api/verify/vehicle is a separate endpoint that forwards to an unfunded
+// downstream and returns "Insufficient balance present".
+const ECUZEN_ENDPOINT = '/api/verify/rc';
 
 const DEFAULT_IDSPAY_BASE_URL = 'https://javabackend.idspay.in/api/v1/prod';
 const REQUIRED_IDSPAY_ENV = ['IDSPAY_API_ID', 'IDSPAY_API_KEY', 'IDSPAY_TOKEN_ID'];
