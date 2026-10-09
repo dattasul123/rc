@@ -16,8 +16,8 @@ const istDay = (date) => date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolk
 const SERVERS = [
     // status drives the badge and whether the option can be picked. Flip Server 1
     // back to 'active' once the Ecuzen IP whitelist is sorted.
-    { id: '1', label: 'Server 1', hint: 'Name, address & mobile', status: 'maintenance' },
-    { id: '2', label: 'Server 2', hint: 'Name, address & mobile', status: 'active' }
+    { id: '1', label: 'Server 1', hint: 'Name, address & mobile', status: 'active' },
+    { id: '2', label: 'Server 2', hint: 'Mobile number only', status: 'active' }
 ];
 const DEFAULT_SERVER_ID = (SERVERS.find((s) => s.status === 'active') || SERVERS[0]).id;
 
@@ -244,6 +244,10 @@ export default function Dashboard() {
 
     if (!user) return null;
 
+    // Server 2 is mobile-only, so its name/address/pincode would all read "N/A".
+    // Hide those cards rather than show empty blocks.
+    const showOwnerDetails = lookupResult?.data?.server !== '2';
+
     return (
         <div className="min-h-screen p-3 sm:p-6 max-w-5xl mx-auto space-y-4 sm:space-y-6">
             <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white/5 backdrop-blur-xl p-4 rounded-xl border border-white/10 shadow-lg">
@@ -359,24 +363,30 @@ export default function Dashboard() {
                                 )}
                             </div>
                             <div className="grid grid-cols-2 gap-3 sm:gap-4">
-                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
-                                    <p className="text-slate-400 text-sm">Name</p>
-                                    <p className="text-lg font-semibold text-white">{lookupResult.data.ownerName}</p>
-                                </div>
+                                {showOwnerDetails && (
+                                    <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
+                                        <p className="text-slate-400 text-sm">Name</p>
+                                        <p className="text-lg font-semibold text-white">{lookupResult.data.ownerName}</p>
+                                    </div>
+                                )}
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Mobile Number</p>
                                     <p className={`text-xl font-bold ${lookupResult.data.mobileNumber === 'Not Available' ? 'text-amber-400 text-base' : 'text-green-400'}`}>
                                         {lookupResult.data.mobileNumber}
                                     </p>
                                 </div>
-                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg col-span-2">
-                                    <p className="text-slate-400 text-sm">Address</p>
-                                    <p className="text-base font-semibold text-white">{lookupResult.data.address}</p>
-                                </div>
-                                <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
-                                    <p className="text-slate-400 text-sm">Pincode</p>
-                                    <p className="text-lg font-semibold text-white">{lookupResult.data.pincode}</p>
-                                </div>
+                                {showOwnerDetails && (
+                                    <>
+                                        <div className="bg-white/5 border border-white/10 p-4 rounded-lg col-span-2">
+                                            <p className="text-slate-400 text-sm">Address</p>
+                                            <p className="text-base font-semibold text-white">{lookupResult.data.address}</p>
+                                        </div>
+                                        <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
+                                            <p className="text-slate-400 text-sm">Pincode</p>
+                                            <p className="text-lg font-semibold text-white">{lookupResult.data.pincode}</p>
+                                        </div>
+                                    </>
+                                )}
                                 <div className="bg-white/5 border border-white/10 p-4 rounded-lg">
                                     <p className="text-slate-400 text-sm">Credits Remaining</p>
                                     <p className="text-lg font-semibold text-indigo-400">{lookupResult.remainingCredits}</p>

@@ -9,13 +9,20 @@ import {
 // there is deliberately no cross-server fallback, so a lookup always returns what
 // the chosen server said and users can retry on the other one themselves.
 //
-//   Server 1 (default) — Ecuzen: one call returns owner name, mobile and addresses.
-//   Server 2           — IDSPay RC To Mobile: returns a mobile number and nothing
-//                        else, so name/address come back as N/A.
-const SERVER_ECUZEN = '1';
-const SERVER_IDSPAY = '2';
-const DEFAULT_SERVER = SERVER_ECUZEN;
-const SERVER_LABELS = { [SERVER_ECUZEN]: 'Server 1', [SERVER_IDSPAY]: 'Server 2' };
+// Each server slot declares its provider and whether it fetches owner details.
+// While Ecuzen is shelved (balance issue on their side) BOTH slots are IDSPay:
+//   Server 1 — IDSPay full: RC To Mobile + RC Advance V2 -> name, address, mobile.
+//   Server 2 — IDSPay lite: RC To Mobile only -> mobile number, name/address N/A.
+// To bring Ecuzen back as Server 1, set slot '1' to { provider: 'ecuzen' } — the
+// Ecuzen call path below is kept intact and keys off provider === 'ecuzen'.
+const SERVER_ONE = '1';
+const SERVER_TWO = '2';
+const DEFAULT_SERVER = SERVER_ONE;
+const SERVER_LABELS = { [SERVER_ONE]: 'Server 1', [SERVER_TWO]: 'Server 2' };
+const SERVER_CONFIG = {
+    [SERVER_ONE]: { provider: 'idspay', fetchOwner: true },
+    [SERVER_TWO]: { provider: 'idspay', fetchOwner: false }
+};
 
 const DEFAULT_ECUZEN_BASE_URL = 'https://xapi.ecuzen.in';
 // Ecuzen's working endpoint is /api/verify/rc (confirmed by Ecuzen's own demo).
@@ -254,7 +261,7 @@ export async function onRequestPost(context) {
         const { rcNumber, server } = await request.json();
         // Anything unrecognized falls back to the default rather than erroring —
         // an older client that sends no server at all still works.
-        const selectedServer = server === SERVER_IDSPAY ? SERVER_IDSPAY : DEFAULT_SERVER;
+        const selectedServer = server === SERVER_TWO ? SERVER_TWO : DEFAULT_SERVER;
         // Canonicalize to bare alphanumerics (uppercase). Users type spaces/hyphens
         // ("HR 26 EZ 2802"); the providers reject those. Both accept the compact form.
         const vehicleNumber = String(rcNumber || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -287,7 +294,8 @@ export async function onRequestPost(context) {
         // relay on a box with a fixed (whitelisted) IP instead of calling Ecuzen
         // directly. In relay mode the Ecuzen api-key lives on the box; this Worker
         // only holds the shared secret that authenticates it to the relay.
-        const usingEcuzen = selectedServer === SERVER_ECUZEN;
+        const { provider, fetchOwner } = SERVER_CONFIG[selectedServer];
+        const usingEcuzen = provider === 'ecuzen';
         const useRelay = Boolean(env.ECUZEN_RELAY_URL);
         const serverLabel = SERVER_LABELS[selectedServer];
         const ecuzenConfigured = useRelay ? Boolean(env.ECUZEN_RELAY_SECRET) : Boolean(env.ECUZEN_API_KEY);
@@ -348,7 +356,7 @@ export async function onRequestPost(context) {
         // usable number. IDSPay bills each call, and a lookup without a mobile is
         // never charged to the client, so firing this on a failed lookup would
         // spend provider credit on a result we give away. null means never asked.
-        const advanceCall = (!usingEcuzen && hasValidMobile)
+        const advanceCall = (!usingEcuzen && fetchOwner && hasValidMobile)
             ? await postJson(
                 `${(env.IDSPAY_BASE_URL || DEFAULT_IDSPAY_BASE_URL).replace(/\/+$/, '')}/srv2/validation/rc`,
                 {
